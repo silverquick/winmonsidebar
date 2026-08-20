@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <OutputType>WinExe</OutputType>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>false</UseWindowsForms>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Monitor.Core\Monitor.Core.csproj" />
+    <ProjectReference Include="..\Monitor.Windows\Monitor.Windows.csproj" />
+    <ProjectReference Include="..\Monitor.Vendors.Nvidia\Monitor.Vendors.Nvidia.csproj" />
+    <ProjectReference Include="..\Monitor.Optional.Lhm\Monitor.Optional.Lhm.csproj" />
+  </ItemGroup>
+
+</Project>

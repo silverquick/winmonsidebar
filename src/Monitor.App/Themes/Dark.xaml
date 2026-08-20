@@ -1,0 +1,194 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:conv="clr-namespace:Monitor.App.Converters"
+                    xmlns:controls="clr-namespace:Monitor.App.Controls">
+
+    <!-- ===== コンバータ ===== -->
+    <BooleanToVisibilityConverter x:Key="BoolToVisibilityConverter" />
+    <conv:InverseBooleanToVisibilityConverter x:Key="InverseBoolToVisibilityConverter" />
+
+    <!-- ===== ベースカラー ===== -->
+    <!-- Acrylic/DWM backdrop の上に重ねる半透明背景。 -->
+    <SolidColorBrush x:Key="SidebarBackgroundBrush" Color="#CC101014" />
+    <SolidColorBrush x:Key="SidebarForegroundBrush" Color="#F0F0F0" />
+    <SolidColorBrush x:Key="SidebarSubTextBrush" Color="#9AA0A6" />
+    <SolidColorBrush x:Key="SidebarDividerBrush" Color="#22FFFFFF" />
+
+    <!-- ===== セクションアクセントカラー ===== -->
+    <SolidColorBrush x:Key="CpuAccentBrush" Color="#4EC9F5" />
+    <SolidColorBrush x:Key="CpuFillBrush" Color="#3A4EC9F5" />
+    <SolidColorBrush x:Key="GpuAccentBrush" Color="#9B7BF0" />
+    <SolidColorBrush x:Key="GpuFillBrush" Color="#3A9B7BF0" />
+    <SolidColorBrush x:Key="MemAccentBrush" Color="#5BD68A" />
+    <SolidColorBrush x:Key="MemFillBrush" Color="#3A5BD68A" />
+    <SolidColorBrush x:Key="DiskAccentBrush" Color="#F0A63A" />
+    <SolidColorBrush x:Key="DiskFillBrush" Color="#3AF0A63A" />
+    <SolidColorBrush x:Key="NetAccentBrush" Color="#F05A8C" />
+    <SolidColorBrush x:Key="NetFillBrush" Color="#3AF05A8C" />
+    <SolidColorBrush x:Key="ThermalAccentBrush" Color="#E0623A" />
+    <SolidColorBrush x:Key="ThermalFillBrush" Color="#3AE0623A" />
+
+    <!-- 警告色（ドライブ使用率90%以上など）。 -->
+    <SolidColorBrush x:Key="WarningBrush" Color="#F05A8C" />
+
+    <!-- ===== メモリ積み上げバー（Task Manager の「メモリ構成」相当）用の色 ===== -->
+    <SolidColorBrush x:Key="MemModifiedBrush" Color="#F0A63A" />
+    <SolidColorBrush x:Key="MemStandbyBrush" Color="#4EC9F5" />
+    <SolidColorBrush x:Key="MemFreeBrush" Color="#33FFFFFF" />
+    <!-- 「使用中」セグメントの内側に重ね塗りする圧縮済み分。使用中(MemAccentBrush)より濃い同系色。 -->
+    <SolidColorBrush x:Key="MemCompressedBrush" Color="#2E8B57" />
+    <!-- StackedBar.SegmentBrushes へそのまま渡す並び順: [使用中, 変更済み, スタンバイ, 空き]。 -->
+    <x:Array x:Key="MemoryStackedBrushes" Type="{x:Type Brush}">
+        <SolidColorBrush Color="#5BD68A" />
+        <SolidColorBrush Color="#F0A63A" />
+        <SolidColorBrush Color="#4EC9F5" />
+        <SolidColorBrush Color="#33FFFFFF" />
+    </x:Array>
+
+    <!-- ===== フォント ===== -->
+    <FontFamily x:Key="DisplayFontFamily">Segoe UI Variable Display, Segoe UI</FontFamily>
+    <FontFamily x:Key="MonoFontFamily">Cascadia Mono, Consolas</FontFamily>
+
+    <!-- ===== テキストスタイル ===== -->
+    <Style x:Key="AppTitleStyle" TargetType="TextBlock">
+        <Setter Property="FontFamily" Value="{StaticResource DisplayFontFamily}" />
+        <Setter Property="FontSize" Value="16" />
+        <Setter Property="FontWeight" Value="SemiBold" />
+        <Setter Property="Foreground" Value="{StaticResource SidebarForegroundBrush}" />
+    </Style>
+
+    <Style x:Key="SectionHeaderStyle" TargetType="TextBlock">
+        <Setter Property="FontFamily" Value="{StaticResource DisplayFontFamily}" />
+        <Setter Property="FontSize" Value="12" />
+        <Setter Property="FontWeight" Value="SemiBold" />
+        <Setter Property="Foreground" Value="{StaticResource SidebarSubTextBrush}" />
+        <Setter Property="Margin" Value="0,0,0,6" />
+    </Style>
+
+    <Style x:Key="BigNumberStyle" TargetType="TextBlock">
+        <Setter Property="FontFamily" Value="{StaticResource MonoFontFamily}" />
+        <Setter Property="FontSize" Value="28" />
+        <Setter Property="FontWeight" Value="Bold" />
+        <Setter Property="Foreground" Value="{StaticResource SidebarForegroundBrush}" />
+    </Style>
+
+    <Style x:Key="ValueTextStyle" TargetType="TextBlock">
+        <Setter Property="FontFamily" Value="{StaticResource MonoFontFamily}" />
+        <Setter Property="FontSize" Value="13" />
+        <Setter Property="Foreground" Value="{StaticResource SidebarForegroundBrush}" />
+    </Style>
+
+    <Style x:Key="UnitStyle" TargetType="TextBlock">
+        <Setter Property="FontFamily" Value="{StaticResource MonoFontFamily}" />
+        <Setter Property="FontSize" Value="12" />
+        <Setter Property="Foreground" Value="{StaticResource SidebarSubTextBrush}" />
+        <Setter Property="VerticalAlignment" Value="Bottom" />
+        <Setter Property="Margin" Value="4,0,0,4" />
+    </Style>
+
+    <Style x:Key="SubTextStyle" TargetType="TextBlock">
+        <Setter Property="FontFamily" Value="{StaticResource DisplayFontFamily}" />
+        <Setter Property="FontSize" Value="11" />
+        <Setter Property="Foreground" Value="{StaticResource SidebarSubTextBrush}" />
+    </Style>
+
+    <Style x:Key="TinyLabelStyle" TargetType="TextBlock">
+        <Setter Property="FontFamily" Value="{StaticResource DisplayFontFamily}" />
+        <Setter Property="FontSize" Value="9" />
+        <Setter Property="Foreground" Value="{StaticResource SidebarSubTextBrush}" />
+    </Style>
+
+    <Style x:Key="ProcessNameStyle" TargetType="TextBlock">
+        <Setter Property="FontFamily" Value="{StaticResource DisplayFontFamily}" />
+        <Setter Property="FontSize" Value="11" />
+        <Setter Property="Foreground" Value="{StaticResource SidebarForegroundBrush}" />
+        <Setter Property="VerticalAlignment" Value="Center" />
+    </Style>
+
+    <Style x:Key="ProcessValueStyle" TargetType="TextBlock">
+        <Setter Property="FontFamily" Value="{StaticResource MonoFontFamily}" />
+        <Setter Property="FontSize" Value="11" />
+        <Setter Property="Foreground" Value="{StaticResource SidebarSubTextBrush}" />
+        <Setter Property="VerticalAlignment" Value="Center" />
+        <Setter Property="HorizontalAlignment" Value="Right" />
+    </Style>
+
+    <Style x:Key="StatLabelStyle" TargetType="TextBlock">
+        <Setter Property="FontFamily" Value="{StaticResource DisplayFontFamily}" />
+        <Setter Property="FontSize" Value="10" />
+        <Setter Property="Foreground" Value="{StaticResource SidebarSubTextBrush}" />
+    </Style>
+
+    <Style x:Key="StatValueStyle" TargetType="TextBlock">
+        <Setter Property="FontFamily" Value="{StaticResource MonoFontFamily}" />
+        <Setter Property="FontSize" Value="12" />
+        <Setter Property="Foreground" Value="{StaticResource SidebarForegroundBrush}" />
+        <Setter Property="Margin" Value="0,1,0,0" />
+    </Style>
+
+    <!-- ===== 管理者権限が必要な項目向けの案内/ボタン ===== -->
+    <Style x:Key="ElevationHintStyle" TargetType="TextBlock">
+        <Setter Property="FontFamily" Value="{StaticResource DisplayFontFamily}" />
+        <Setter Property="FontSize" Value="11" />
+        <Setter Property="Foreground" Value="{StaticResource SidebarSubTextBrush}" />
+        <Setter Property="TextWrapping" Value="Wrap" />
+        <Setter Property="Margin" Value="0,0,0,8" />
+    </Style>
+
+    <Style x:Key="ElevationButtonStyle" TargetType="Button">
+        <Setter Property="FontFamily" Value="{StaticResource DisplayFontFamily}" />
+        <Setter Property="FontSize" Value="11" />
+        <Setter Property="Foreground" Value="{StaticResource SidebarForegroundBrush}" />
+        <Setter Property="Padding" Value="10,6" />
+        <Setter Property="Cursor" Value="Hand" />
+        <Setter Property="HorizontalAlignment" Value="Left" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="Root" Background="#1FFFFFFF" BorderBrush="#33FFFFFF" BorderThickness="1" CornerRadius="4"
+                            Padding="{TemplateBinding Padding}">
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Root" Property="Background" Value="#2FFFFFFF" />
+                        </Trigger>
+                        <Trigger Property="IsPressed" Value="True">
+                            <Setter TargetName="Root" Property="Background" Value="#14FFFFFF" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- ===== 区切り線 ===== -->
+    <Style x:Key="DividerStyle" TargetType="Rectangle">
+        <Setter Property="Height" Value="1" />
+        <Setter Property="Fill" Value="{StaticResource SidebarDividerBrush}" />
+        <Setter Property="Margin" Value="16,4,16,4" />
+    </Style>
+
+    <!-- ===== ドライブ一覧の使用率バー。90%以上は警告色に切り替える ===== -->
+    <Style x:Key="VolumeGaugeBarStyle" TargetType="controls:GaugeBar">
+        <Setter Property="Foreground" Value="{StaticResource DiskAccentBrush}" />
+        <Style.Triggers>
+            <DataTrigger Binding="{Binding IsWarning}" Value="True">
+                <Setter Property="Foreground" Value="{StaticResource WarningBrush}" />
+            </DataTrigger>
+        </Style.Triggers>
+    </Style>
+
+    <!-- ===== SectionExpander ===== -->
+    <SolidColorBrush x:Key="SectionHeaderHoverBrush" Color="#14FFFFFF" />
+    <SolidColorBrush x:Key="ChevronBrush" Color="#9AA0A6" />
+
+    <Style x:Key="SectionSummaryStyle" TargetType="TextBlock">
+        <Setter Property="FontFamily" Value="{StaticResource MonoFontFamily}" />
+        <Setter Property="FontSize" Value="10" />
+        <Setter Property="Foreground" Value="{StaticResource SidebarSubTextBrush}" />
+        <Setter Property="HorizontalAlignment" Value="Right" />
+        <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+    </Style>
+
+</ResourceDictionary>

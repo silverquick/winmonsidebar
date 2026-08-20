@@ -1,0 +1,558 @@
+<shell:AppBarWindow
+    x:Class="Monitor.App.Views.SidebarWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:shell="clr-namespace:Monitor.App.Shell"
+    xmlns:controls="clr-namespace:Monitor.App.Controls"
+    Title="System Monitor"
+    Width="340"
+    Height="900"
+    Background="{StaticResource SidebarBackgroundBrush}"
+    TextElement.Foreground="{StaticResource SidebarForegroundBrush}">
+
+    <shell:AppBarWindow.ContextMenu>
+        <ContextMenu>
+            <MenuItem Header="最前面表示" Click="OnTopmostMenuItemClick" IsCheckable="True" IsChecked="True" />
+            <MenuItem Header="管理者で再起動" Click="OnRestartAsAdminMenuItemClick" />
+            <MenuItem Header="幅をリセット" Click="OnResetWidthMenuItemClick" />
+            <Separator />
+            <MenuItem Header="終了" Click="OnExitMenuItemClick" />
+        </ContextMenu>
+    </shell:AppBarWindow.ContextMenu>
+
+    <!-- スクロールバーは非表示。ホイールでのスクロールは有効なまま（Disabled にすると
+         スクロール自体が止まり、画面に収まらないセクションが見られなくなるため）。 -->
+    <ScrollViewer VerticalScrollBarVisibility="Hidden" HorizontalScrollBarVisibility="Disabled">
+        <StackPanel Grid.IsSharedSizeScope="True">
+
+            <!-- ヘッダー -->
+            <Grid Margin="16,16,16,8">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0" Text="System Monitor" Style="{StaticResource AppTitleStyle}" VerticalAlignment="Center" />
+                <TextBlock Grid.Column="1" Text="{Binding HeaderTime}" Style="{StaticResource SubTextStyle}" VerticalAlignment="Center" />
+            </Grid>
+            <Rectangle Style="{StaticResource DividerStyle}" />
+
+            <!-- CPU -->
+            <controls:SectionExpander SectionKey="cpu" SectionTitle="CPU" AccentBrush="{StaticResource CpuAccentBrush}"
+                                       SectionSummary="{Binding CpuSummary}" IsExpanded="{Binding IsCpuExpanded}"
+                                       Margin="16,4,16,4">
+                <StackPanel>
+                    <TextBlock Text="{Binding CpuModelText}" Style="{StaticResource SubTextStyle}"
+                               TextTrimming="CharacterEllipsis" Margin="0,0,0,6" />
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                        <TextBlock Text="{Binding CpuUsageText}" Style="{StaticResource BigNumberStyle}" VerticalAlignment="Bottom" />
+                        <TextBlock Text="{Binding CpuCurrentClockText}" Style="{StaticResource ValueTextStyle}"
+                                   Margin="10,0,0,5" VerticalAlignment="Bottom" />
+                    </StackPanel>
+                    <controls:GaugeBar Height="6" Value="{Binding CpuGaugeValue}"
+                                        Foreground="{StaticResource CpuAccentBrush}" Margin="0,0,0,8" />
+                    <controls:Sparkline Height="48" Values="{Binding CpuSparkline}" Minimum="0" Maximum="100"
+                                         Stroke="{StaticResource CpuAccentBrush}" Fill="{StaticResource CpuFillBrush}"
+                                         Margin="0,0,0,8" />
+                    <controls:CoreGrid Height="44" Values="{Binding CpuCoreValues}"
+                                        LowBrush="{StaticResource CpuFillBrush}" HighBrush="{StaticResource CpuAccentBrush}"
+                                        Margin="0,0,0,6" />
+                    <TextBlock Text="{Binding CpuCoreCountText}" Style="{StaticResource SubTextStyle}" Margin="0,0,0,8" />
+                    <UniformGrid Columns="2">
+                        <StackPanel Margin="0,0,4,0">
+                            <TextBlock Text="CPU 温度" Style="{StaticResource StatLabelStyle}" />
+                            <TextBlock Text="{Binding CpuTemperatureText}" Style="{StaticResource StatValueStyle}" />
+                        </StackPanel>
+                        <StackPanel Margin="4,0,0,0">
+                            <TextBlock Text="パッケージ電力" Style="{StaticResource StatLabelStyle}" />
+                            <TextBlock Text="{Binding CpuPowerText}" Style="{StaticResource StatValueStyle}" />
+                        </StackPanel>
+                    </UniformGrid>
+                </StackPanel>
+            </controls:SectionExpander>
+            <Rectangle Style="{StaticResource DividerStyle}" />
+
+            <!-- GPU -->
+            <controls:SectionExpander SectionKey="gpu" SectionTitle="GPU" AccentBrush="{StaticResource GpuAccentBrush}"
+                                       SectionSummary="{Binding GpuSummary}" IsExpanded="{Binding IsGpuExpanded}"
+                                       Margin="16,4,16,4">
+                <StackPanel>
+                    <TextBlock Text="{Binding GpuAdapterNameText}" Style="{StaticResource SubTextStyle}"
+                               TextTrimming="CharacterEllipsis" Margin="0,0,0,6" />
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                        <TextBlock Text="{Binding GpuUsageText}" Style="{StaticResource BigNumberStyle}" VerticalAlignment="Bottom" />
+                        <TextBlock Text="{Binding GpuCoreClockText}" Style="{StaticResource ValueTextStyle}"
+                                   Margin="10,0,0,5" VerticalAlignment="Bottom" />
+                    </StackPanel>
+                    <controls:GaugeBar Height="6" Value="{Binding GpuGaugeValue}"
+                                        Foreground="{StaticResource GpuAccentBrush}" Margin="0,0,0,8" />
+                    <controls:Sparkline Height="48" Values="{Binding GpuSparkline}" Minimum="0" Maximum="100"
+                                         Stroke="{StaticResource GpuAccentBrush}" Fill="{StaticResource GpuFillBrush}"
+                                         Margin="0,0,0,8" />
+                    <UniformGrid Columns="4" Margin="0,0,0,10">
+                        <StackPanel Margin="0,0,4,0">
+                            <TextBlock Text="3D" Style="{StaticResource TinyLabelStyle}" />
+                            <controls:GaugeBar Height="4" Value="{Binding Gpu3DValue}" Foreground="{StaticResource GpuAccentBrush}" Margin="0,2,0,0" />
+                        </StackPanel>
+                        <StackPanel Margin="4,0,4,0">
+                            <TextBlock Text="Copy" Style="{StaticResource TinyLabelStyle}" />
+                            <controls:GaugeBar Height="4" Value="{Binding GpuCopyValue}" Foreground="{StaticResource GpuAccentBrush}" Margin="0,2,0,0" />
+                        </StackPanel>
+                        <StackPanel Margin="4,0,4,0">
+                            <TextBlock Text="Video" Style="{StaticResource TinyLabelStyle}" />
+                            <controls:GaugeBar Height="4" Value="{Binding GpuVideoValue}" Foreground="{StaticResource GpuAccentBrush}" Margin="0,2,0,0" />
+                        </StackPanel>
+                        <StackPanel Margin="4,0,0,0">
+                            <TextBlock Text="Compute" Style="{StaticResource TinyLabelStyle}" />
+                            <controls:GaugeBar Height="4" Value="{Binding GpuComputeValue}" Foreground="{StaticResource GpuAccentBrush}" Margin="0,2,0,0" />
+                        </StackPanel>
+                    </UniformGrid>
+                    <UniformGrid Columns="2" Margin="0,0,0,10">
+                        <StackPanel Margin="0,0,4,4">
+                            <TextBlock Text="温度" Style="{StaticResource StatLabelStyle}" />
+                            <TextBlock Text="{Binding GpuTemperatureText}" Style="{StaticResource StatValueStyle}" />
+                        </StackPanel>
+                        <StackPanel Margin="4,0,0,4">
+                            <TextBlock Text="ホットスポット" Style="{StaticResource StatLabelStyle}" />
+                            <TextBlock Text="{Binding GpuHotspotTemperatureText}" Style="{StaticResource StatValueStyle}" />
+                        </StackPanel>
+                        <StackPanel Margin="0,0,4,4">
+                            <TextBlock Text="ファン" Style="{StaticResource StatLabelStyle}" />
+                            <TextBlock Text="{Binding GpuFanText}" Style="{StaticResource StatValueStyle}" />
+                        </StackPanel>
+                        <StackPanel Margin="4,0,0,4">
+                            <TextBlock Text="消費電力" Style="{StaticResource StatLabelStyle}" />
+                            <TextBlock Text="{Binding GpuPowerText}" Style="{StaticResource StatValueStyle}" />
+                        </StackPanel>
+                        <StackPanel Margin="0,0,4,0">
+                            <TextBlock Text="メモリクロック" Style="{StaticResource StatLabelStyle}" />
+                            <TextBlock Text="{Binding GpuMemoryClockText}" Style="{StaticResource StatValueStyle}" />
+                        </StackPanel>
+                    </UniformGrid>
+                    <TextBlock Text="{Binding GpuVramText}" Style="{StaticResource ValueTextStyle}" Margin="0,0,0,4" />
+                    <controls:GaugeBar Height="6" Value="{Binding GpuVramGaugeValue}" Foreground="{StaticResource GpuAccentBrush}" Margin="0,0,0,8" />
+                    <TextBlock Text="GPU 温度" Style="{StaticResource TinyLabelStyle}" Margin="0,0,0,2" />
+                    <controls:Sparkline Height="32" Values="{Binding GpuTemperatureSparkline}" AutoScale="True"
+                                         Stroke="{StaticResource GpuAccentBrush}" Fill="{StaticResource GpuFillBrush}" />
+                </StackPanel>
+            </controls:SectionExpander>
+            <Rectangle Style="{StaticResource DividerStyle}" />
+
+            <!-- メモリ -->
+            <controls:SectionExpander SectionKey="memory" SectionTitle="メモリ" AccentBrush="{StaticResource MemAccentBrush}"
+                                       SectionSummary="{Binding MemorySummary}" IsExpanded="{Binding IsMemoryExpanded}"
+                                       Margin="16,4,16,4">
+                <StackPanel>
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+                        <TextBlock Text="{Binding MemoryUsageText}" Style="{StaticResource BigNumberStyle}" FontSize="20" VerticalAlignment="Bottom" />
+                        <TextBlock Text="{Binding MemoryUsagePercentText}" Style="{StaticResource ValueTextStyle}"
+                                   Margin="8,0,0,3" VerticalAlignment="Bottom" />
+                    </StackPanel>
+
+                    <!-- 積み上げバー（使用中[圧縮を重ね塗り] / 変更済み / スタンバイ / 空き） -->
+                    <controls:StackedBar Height="14" Values="{Binding MemoryStackedValues}"
+                                          OverlayValue="{Binding MemoryCompressedBytes}"
+                                          SegmentBrushes="{StaticResource MemoryStackedBrushes}"
+                                          OverlayBrush="{StaticResource MemCompressedBrush}"
+                                          Margin="0,0,0,4" />
+                    <controls:Sparkline Height="40" Values="{Binding MemorySparkline}" Minimum="0" Maximum="100"
+                                         Stroke="{StaticResource MemAccentBrush}" Fill="{StaticResource MemFillBrush}"
+                                         Margin="0,0,0,8" />
+
+                    <UniformGrid Columns="2" Margin="0,0,0,8">
+                        <StackPanel Margin="0,0,4,4">
+                            <TextBlock Text="キャッシュ" Style="{StaticResource StatLabelStyle}" />
+                            <TextBlock Text="{Binding MemoryCachedText}" Style="{StaticResource StatValueStyle}" />
+                        </StackPanel>
+                        <StackPanel Margin="4,0,0,4">
+                            <TextBlock Text="スタンバイ" Style="{StaticResource StatLabelStyle}" />
+                            <TextBlock Text="{Binding MemoryStandbyText}" Style="{StaticResource StatValueStyle}" />
+                        </StackPanel>
+                        <StackPanel Margin="0,0,4,4">
+                            <TextBlock Text="変更済み" Style="{StaticResource StatLabelStyle}" />
+                            <TextBlock Text="{Binding MemoryModifiedText}" Style="{StaticResource StatValueStyle}" />
+                        </StackPanel>
+                        <StackPanel Margin="4,0,0,4">
+                            <TextBlock Text="空き" Style="{StaticResource StatLabelStyle}" />
+                            <TextBlock Text="{Binding MemoryFreeText}" Style="{StaticResource StatValueStyle}" />
+                        </StackPanel>
+                        <StackPanel Margin="0,0,4,4">
+                            <TextBlock Text="圧縮済み" Style="{StaticResource StatLabelStyle}" />
+                            <TextBlock Text="{Binding MemoryCompressedText}" Style="{StaticResource StatValueStyle}" />
+                        </StackPanel>
+                        <StackPanel Margin="4,0,0,4">
+                            <TextBlock Text="ページプール" Style="{StaticResource StatLabelStyle}" />
+                            <TextBlock Text="{Binding MemoryPoolPagedText}" Style="{StaticResource StatValueStyle}" />
+                        </StackPanel>
+                        <StackPanel Margin="0,0,4,0">
+                            <TextBlock Text="非ページプール" Style="{StaticResource StatLabelStyle}" />
+                            <TextBlock Text="{Binding MemoryPoolNonPagedText}" Style="{StaticResource StatValueStyle}" />
+                        </StackPanel>
+                        <StackPanel Margin="4,0,0,0">
+                            <TextBlock Text="システムキャッシュ" Style="{StaticResource StatLabelStyle}" />
+                            <TextBlock Text="{Binding MemorySystemCacheText}" Style="{StaticResource StatValueStyle}" />
+                        </StackPanel>
+                    </UniformGrid>
+
+                    <UniformGrid Columns="2" Margin="0,0,0,4">
+                        <StackPanel Margin="0,0,4,0">
+                            <TextBlock Text="コミット" Style="{StaticResource StatLabelStyle}" />
+                            <TextBlock Text="{Binding MemoryCommitText}" Style="{StaticResource StatValueStyle}" />
+                        </StackPanel>
+                        <StackPanel Margin="4,0,0,0">
+                            <TextBlock Text="コミットピーク" Style="{StaticResource StatLabelStyle}" />
+                            <TextBlock Text="{Binding MemoryCommitPeakText}" Style="{StaticResource StatValueStyle}" />
+                        </StackPanel>
+                    </UniformGrid>
+
+                    <TextBlock Text="{Binding MemoryHardwareReservedText}" Style="{StaticResource TinyLabelStyle}" Margin="0,4,0,8"
+                               Visibility="{Binding MemoryHasHardwareReserved, Converter={StaticResource BoolToVisibilityConverter}}" />
+
+                    <!-- ページファイル -->
+                    <TextBlock Text="ページファイル" Style="{StaticResource TinyLabelStyle}" Margin="0,0,0,4" />
+                    <ItemsControl ItemsSource="{Binding PageFileRows}" Margin="0,0,0,8">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <StackPanel Margin="0,0,0,6">
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Grid.Column="0" Text="{Binding PathText}" Style="{StaticResource SubTextStyle}"
+                                                   TextTrimming="CharacterEllipsis" />
+                                        <TextBlock Grid.Column="1" Text="{Binding PercentText}" Style="{StaticResource ProcessValueStyle}" />
+                                    </Grid>
+                                    <Grid Margin="0,2,0,0">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <controls:GaugeBar Grid.Column="0" Height="4" Value="{Binding GaugeValue}"
+                                                            Foreground="{StaticResource MemAccentBrush}"
+                                                            VerticalAlignment="Center" Margin="0,0,8,0" />
+                                        <TextBlock Grid.Column="1" Text="{Binding UsageText}" Style="{StaticResource TinyLabelStyle}" />
+                                    </Grid>
+                                    <TextBlock Text="{Binding PeakText}" Style="{StaticResource TinyLabelStyle}" Margin="0,2,0,0" />
+                                </StackPanel>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+
+                    <TextBlock Text="{Binding MemoryHandlesLine}" Style="{StaticResource TinyLabelStyle}" Margin="0,0,0,8" />
+
+                    <!-- スロット構成 -->
+                    <TextBlock Text="{Binding MemorySlotSummaryText}" Style="{StaticResource SubTextStyle}" Margin="0,0,0,4" />
+                    <controls:SectionExpander SectionKey="memory-modules" SectionTitle="メモリモジュール"
+                                               AccentBrush="{StaticResource MemAccentBrush}"
+                                               SectionSummary="{Binding MemoryModulesSummary}"
+                                               IsExpanded="{Binding IsMemoryModulesExpanded}">
+                        <ItemsControl ItemsSource="{Binding MemoryModules}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Grid Margin="0,2" ToolTip="{Binding PartNumberText}">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto" SharedSizeGroup="DimmSlotCol" />
+                                            <ColumnDefinition Width="Auto" SharedSizeGroup="DimmCapCol" />
+                                            <ColumnDefinition Width="Auto" SharedSizeGroup="DimmSpeedCol" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Grid.Column="0" Text="{Binding SlotText}" Style="{StaticResource ProcessNameStyle}" Margin="0,0,8,0" />
+                                        <TextBlock Grid.Column="1" Text="{Binding CapacityText}" Style="{StaticResource ProcessValueStyle}"
+                                                   HorizontalAlignment="Left" Margin="0,0,8,0" />
+                                        <TextBlock Grid.Column="2" Text="{Binding SpeedText}" Style="{StaticResource ProcessValueStyle}"
+                                                   HorizontalAlignment="Left" Margin="0,0,8,0" />
+                                        <TextBlock Grid.Column="3" Text="{Binding ManufacturerText}" Style="{StaticResource SubTextStyle}"
+                                                   TextTrimming="CharacterEllipsis" />
+                                    </Grid>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </controls:SectionExpander>
+                </StackPanel>
+            </controls:SectionExpander>
+            <Rectangle Style="{StaticResource DividerStyle}" />
+
+            <!-- ディスク -->
+            <controls:SectionExpander SectionKey="disk" SectionTitle="ディスク" AccentBrush="{StaticResource DiskAccentBrush}"
+                                       SectionSummary="{Binding DiskSummary}" IsExpanded="{Binding IsDiskExpanded}"
+                                       Margin="16,4,16,4">
+                <StackPanel>
+                    <TextBlock Text="{Binding DiskReadText}" Style="{StaticResource SubTextStyle}" Margin="0,0,0,2" />
+                    <controls:Sparkline Height="32" Values="{Binding DiskReadSparkline}" AutoScale="True"
+                                         Stroke="{StaticResource DiskAccentBrush}" Fill="{StaticResource DiskFillBrush}"
+                                         Margin="0,0,0,6" />
+                    <TextBlock Text="{Binding DiskWriteText}" Style="{StaticResource SubTextStyle}" Margin="0,0,0,2" />
+                    <controls:Sparkline Height="32" Values="{Binding DiskWriteSparkline}" AutoScale="True"
+                                         Stroke="{StaticResource DiskAccentBrush}" Fill="{StaticResource DiskFillBrush}"
+                                         Margin="0,0,0,8" />
+                    <controls:GaugeBar Height="6" Value="{Binding DiskBusyGaugeValue}" Foreground="{StaticResource DiskAccentBrush}" Margin="0,0,0,10" />
+
+                    <ItemsControl ItemsSource="{Binding DiskRows}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Border BorderBrush="{StaticResource SidebarDividerBrush}" BorderThickness="0,0,0,1" Padding="0,6">
+                                    <StackPanel>
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="Auto" />
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Grid.Column="0" Text="{Binding DisplayName}" Style="{StaticResource ProcessNameStyle}"
+                                                       FontWeight="SemiBold" Margin="0,0,6,0" />
+                                            <TextBlock Grid.Column="1" Text="{Binding ModelText}" Style="{StaticResource SubTextStyle}"
+                                                       TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                                            <TextBlock Grid.Column="2" Text="{Binding TemperatureText}" Style="{StaticResource ProcessValueStyle}" />
+                                        </Grid>
+                                        <Grid Margin="0,4,0,0">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="Auto" SharedSizeGroup="DiskRwCol" />
+                                                <ColumnDefinition Width="Auto" SharedSizeGroup="DiskRwCol" />
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Grid.Column="0" Text="{Binding ReadText}" Style="{StaticResource TinyLabelStyle}" Margin="0,0,8,0" />
+                                            <TextBlock Grid.Column="1" Text="{Binding WriteText}" Style="{StaticResource TinyLabelStyle}" Margin="0,0,8,0" />
+                                            <controls:GaugeBar Grid.Column="2" Height="4" Value="{Binding CapacityGaugeValue}"
+                                                                Foreground="{StaticResource DiskAccentBrush}" VerticalAlignment="Center" Margin="0,0,8,0" />
+                                            <TextBlock Grid.Column="3" Text="{Binding CapacityText}" Style="{StaticResource TinyLabelStyle}" />
+                                        </Grid>
+                                    </StackPanel>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </StackPanel>
+            </controls:SectionExpander>
+            <Rectangle Style="{StaticResource DividerStyle}" />
+
+            <!-- ドライブ（論理ボリューム全部。ネットワークドライブ含む） -->
+            <controls:SectionExpander SectionKey="volumes" SectionTitle="ドライブ" AccentBrush="{StaticResource DiskAccentBrush}"
+                                       SectionSummary="{Binding VolumesSummary}" IsExpanded="{Binding IsVolumesExpanded}"
+                                       Margin="16,4,16,4">
+                <ItemsControl ItemsSource="{Binding VolumeRows}">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <Border BorderBrush="{StaticResource SidebarDividerBrush}" BorderThickness="0,0,0,1" Padding="0,6">
+                                <Border.Style>
+                                    <Style TargetType="Border">
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding IsReady}" Value="False">
+                                                <Setter Property="Opacity" Value="0.45" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </Border.Style>
+                                <StackPanel>
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <!-- ネットワークドライブ用アイコン（ワイヤーフレーム地球儀。フォント絵文字は使わない） -->
+                                        <Path Grid.Column="0"
+                                              Data="M1,5 A4,4 0 1 0 9,5 A4,4 0 1 0 1,5 M1,5 A4,1.6 0 1 0 9,5 A4,1.6 0 1 0 1,5 M5,1 A1.6,4 0 1 0 5,9 A1.6,4 0 1 0 5,1"
+                                              Width="10" Height="10" Stretch="Uniform" Stroke="{StaticResource SidebarSubTextBrush}"
+                                              StrokeThickness="0.8" Margin="0,0,4,0" VerticalAlignment="Center"
+                                              Visibility="{Binding IsNetwork, Converter={StaticResource BoolToVisibilityConverter}}" />
+                                        <TextBlock Grid.Column="1" Text="{Binding DriveLetter}" Style="{StaticResource ProcessNameStyle}"
+                                                   FontWeight="SemiBold" Margin="0,0,6,0" />
+                                        <TextBlock Grid.Column="2" Text="{Binding LabelText}" Style="{StaticResource SubTextStyle}"
+                                                   TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                                        <TextBlock Grid.Column="3" Text="{Binding UsagePercentText}" Style="{StaticResource ProcessValueStyle}" />
+                                    </Grid>
+                                    <Grid Margin="0,4,0,0">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <controls:GaugeBar Grid.Column="0" Height="4" Value="{Binding GaugeValue}"
+                                                            Style="{StaticResource VolumeGaugeBarStyle}"
+                                                            VerticalAlignment="Center" Margin="0,0,8,0" />
+                                        <TextBlock Grid.Column="1" Text="{Binding CapacityText}" Style="{StaticResource TinyLabelStyle}" />
+                                    </Grid>
+                                </StackPanel>
+                            </Border>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+            </controls:SectionExpander>
+            <Rectangle Style="{StaticResource DividerStyle}" />
+
+            <!-- ネットワーク -->
+            <controls:SectionExpander SectionKey="network" SectionTitle="ネットワーク" AccentBrush="{StaticResource NetAccentBrush}"
+                                       SectionSummary="{Binding NetworkSummary}" IsExpanded="{Binding IsNetworkExpanded}"
+                                       Margin="16,4,16,4">
+                <StackPanel>
+                    <TextBlock Text="{Binding NetworkNicName}" Style="{StaticResource SubTextStyle}" Margin="0,0,0,6"
+                               TextTrimming="CharacterEllipsis" />
+                    <TextBlock Text="{Binding NetworkDownText}" Style="{StaticResource ValueTextStyle}" Margin="0,0,0,2" />
+                    <controls:Sparkline Height="32" Values="{Binding NetworkDownSparkline}" AutoScale="True"
+                                         Stroke="{StaticResource NetAccentBrush}" Fill="{StaticResource NetFillBrush}"
+                                         Margin="0,0,0,6" />
+                    <TextBlock Text="{Binding NetworkUpText}" Style="{StaticResource ValueTextStyle}" Margin="0,0,0,2" />
+                    <controls:Sparkline Height="32" Values="{Binding NetworkUpSparkline}" AutoScale="True"
+                                         Stroke="{StaticResource NetAccentBrush}" Fill="{StaticResource NetFillBrush}"
+                                         Margin="0,0,0,8" />
+
+                    <controls:SectionExpander SectionKey="network-all" SectionTitle="他のアダプタ"
+                                               AccentBrush="{StaticResource NetAccentBrush}"
+                                               SectionSummary="{Binding NetworkAllSummary}"
+                                               IsExpanded="{Binding IsNetworkAllExpanded}">
+                        <ItemsControl ItemsSource="{Binding NetworkAllRows}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <StackPanel Margin="0,0,0,6">
+                                        <TextBlock Text="{Binding NameText}" Style="{StaticResource SubTextStyle}"
+                                                   TextTrimming="CharacterEllipsis" Margin="0,0,0,2" />
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Grid.Column="0" Text="{Binding DownText}" Style="{StaticResource TinyLabelStyle}" />
+                                            <TextBlock Grid.Column="1" Text="{Binding UpText}" Style="{StaticResource TinyLabelStyle}"
+                                                       HorizontalAlignment="Right" />
+                                        </Grid>
+                                    </StackPanel>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </controls:SectionExpander>
+                </StackPanel>
+            </controls:SectionExpander>
+            <Rectangle Style="{StaticResource DividerStyle}" />
+
+            <!-- 温度・ファン -->
+            <controls:SectionExpander SectionKey="thermal" SectionTitle="温度・ファン" AccentBrush="{StaticResource ThermalAccentBrush}"
+                                       SectionSummary="{Binding ThermalSummary}" IsExpanded="{Binding IsThermalExpanded}"
+                                       Margin="16,4,16,4">
+                <StackPanel>
+
+                    <!-- 管理者権限が無い場合 -->
+                    <StackPanel Visibility="{Binding IsThermalElevated, Converter={StaticResource InverseBoolToVisibilityConverter}}">
+                        <TextBlock Text="CPU・マザーボード温度とファン回転数の取得には管理者権限が必要です。"
+                                   Style="{StaticResource ElevationHintStyle}" />
+                        <Button Content="管理者で再起動" Style="{StaticResource ElevationButtonStyle}" Click="OnRestartAsAdminButtonClick" />
+                    </StackPanel>
+
+                    <!-- 管理者権限がある場合 -->
+                    <StackPanel Visibility="{Binding IsThermalElevated, Converter={StaticResource BoolToVisibilityConverter}}">
+                        <UniformGrid Columns="2" Margin="0,0,0,10">
+                            <StackPanel Margin="0,0,4,4">
+                                <TextBlock Text="CPU パッケージ" Style="{StaticResource StatLabelStyle}" />
+                                <TextBlock Text="{Binding ThermalCpuPackageText}" Style="{StaticResource StatValueStyle}" />
+                            </StackPanel>
+                            <StackPanel Margin="4,0,0,4">
+                                <TextBlock Text="CPU 電力" Style="{StaticResource StatLabelStyle}" />
+                                <TextBlock Text="{Binding ThermalCpuPowerText}" Style="{StaticResource StatValueStyle}" />
+                            </StackPanel>
+                            <StackPanel Margin="0,0,4,0">
+                                <TextBlock Text="マザーボード" Style="{StaticResource StatLabelStyle}" />
+                                <TextBlock Text="{Binding ThermalMotherboardText}" Style="{StaticResource StatValueStyle}" />
+                            </StackPanel>
+                            <StackPanel Margin="4,0,0,0">
+                                <TextBlock Text="VRM" Style="{StaticResource StatLabelStyle}" />
+                                <TextBlock Text="{Binding ThermalVrmText}" Style="{StaticResource StatValueStyle}" />
+                            </StackPanel>
+                        </UniformGrid>
+
+                        <StackPanel Margin="0,0,0,8">
+                            <TextBlock Text="コア温度" Style="{StaticResource TinyLabelStyle}" Margin="0,0,0,2" />
+                            <ItemsControl ItemsSource="{Binding ThermalCoreTemperatures}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Grid Margin="0,2">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Grid.Column="0" Text="{Binding Name}" Style="{StaticResource ProcessNameStyle}" />
+                                            <TextBlock Grid.Column="1" Text="{Binding ValueText}" Style="{StaticResource ProcessValueStyle}" />
+                                        </Grid>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </StackPanel>
+
+                        <StackPanel Margin="0,0,0,8">
+                            <TextBlock Text="その他温度" Style="{StaticResource TinyLabelStyle}" Margin="0,0,0,2" />
+                            <ItemsControl ItemsSource="{Binding ThermalOtherTemperatures}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Grid Margin="0,2">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Grid.Column="0" Text="{Binding Name}" Style="{StaticResource ProcessNameStyle}" />
+                                            <TextBlock Grid.Column="1" Text="{Binding ValueText}" Style="{StaticResource ProcessValueStyle}" />
+                                        </Grid>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </StackPanel>
+
+                        <StackPanel>
+                            <TextBlock Text="ファン" Style="{StaticResource TinyLabelStyle}" Margin="0,0,0,2" />
+                            <ItemsControl ItemsSource="{Binding ThermalFans}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Grid Margin="0,2">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Grid.Column="0" Text="{Binding Name}" Style="{StaticResource ProcessNameStyle}" />
+                                            <TextBlock Grid.Column="1" Text="{Binding ValueText}" Style="{StaticResource ProcessValueStyle}" />
+                                        </Grid>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </StackPanel>
+                    </StackPanel>
+                </StackPanel>
+            </controls:SectionExpander>
+            <Rectangle Style="{StaticResource DividerStyle}" />
+
+            <!-- プロセス -->
+            <controls:SectionExpander SectionKey="process" SectionTitle="プロセス" AccentBrush="{StaticResource CpuAccentBrush}"
+                                       SectionSummary="{Binding ProcessSummary}" IsExpanded="{Binding IsProcessExpanded}"
+                                       Margin="16,4,16,12">
+                <StackPanel>
+                    <Grid Margin="0,0,0,4">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" SharedSizeGroup="CpuCol" />
+                            <ColumnDefinition Width="Auto" SharedSizeGroup="MemCol" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0" Text="名前" Style="{StaticResource TinyLabelStyle}" />
+                        <TextBlock Grid.Column="1" Text="CPU%" Style="{StaticResource TinyLabelStyle}" Margin="8,0,0,0" HorizontalAlignment="Right" />
+                        <TextBlock Grid.Column="2" Text="メモリ" Style="{StaticResource TinyLabelStyle}" Margin="8,0,0,0" HorizontalAlignment="Right" />
+                    </Grid>
+                    <ItemsControl ItemsSource="{Binding Processes}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Grid Margin="0,2">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" SharedSizeGroup="CpuCol" />
+                                        <ColumnDefinition Width="Auto" SharedSizeGroup="MemCol" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="{Binding Name}" Style="{StaticResource ProcessNameStyle}"
+                                               TextTrimming="CharacterEllipsis" />
+                                    <TextBlock Grid.Column="1" Text="{Binding CpuText}" Style="{StaticResource ProcessValueStyle}" Margin="8,0,0,0" />
+                                    <TextBlock Grid.Column="2" Text="{Binding MemoryText}" Style="{StaticResource ProcessValueStyle}" Margin="8,0,0,0" />
+                                </Grid>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </StackPanel>
+            </controls:SectionExpander>
+
+        </StackPanel>
+    </ScrollViewer>
+
+</shell:AppBarWindow>
