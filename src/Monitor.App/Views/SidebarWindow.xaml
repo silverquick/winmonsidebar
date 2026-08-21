@@ -144,7 +144,10 @@
                 <StackPanel>
                     <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
                         <TextBlock Text="{Binding MemoryUsageText}" Style="{StaticResource BigNumberStyle}" VerticalAlignment="Bottom" />
+                        <!-- 使用率は積み上げバーの「使用中」セグメントと同じ緑にして、
+                             行を1つも足さずに凡例の役目を持たせる。 -->
                         <TextBlock Text="{Binding MemoryUsagePercentText}" Style="{StaticResource ValueTextStyle}"
+                                   Foreground="{StaticResource MemAccentBrush}"
                                    Margin="8,0,0,3" VerticalAlignment="Bottom" />
                     </StackPanel>
 
@@ -158,15 +161,23 @@
                                          Stroke="{StaticResource MemAccentBrush}" Fill="{StaticResource MemFillBrush}"
                                          Margin="0,0,0,4" />
 
+                    <!-- 上2行は積み上げバーのセグメントに対応する項目。ラベルをバーと同じ色にして
+                         凡例を兼ねさせ、読み順（左上→右下）がバーの並び順（使用中→変更済み→
+                         スタンバイ→空き）と一致するように並べている。
+                         下2行はバーに対応しない項目なので既定のグレーのままにする。 -->
                     <UniformGrid Columns="2" Margin="0,0,0,4">
+                        <controls:StatRow Label="圧縮済み" Value="{Binding MemoryCompressedText}"
+                                          LabelBrush="{StaticResource MemCompressedLabelBrush}" Margin="0,0,6,0" />
+                        <controls:StatRow Label="変更済み" Value="{Binding MemoryModifiedText}"
+                                          LabelBrush="{StaticResource MemModifiedBrush}" />
+                        <controls:StatRow Label="スタンバイ" Value="{Binding MemoryStandbyText}"
+                                          LabelBrush="{StaticResource MemStandbyBrush}" Margin="0,0,6,0" />
+                        <controls:StatRow Label="空き" Value="{Binding MemoryFreeText}"
+                                          LabelBrush="{StaticResource MemFreeLabelBrush}" />
                         <controls:StatRow Label="キャッシュ" Value="{Binding MemoryCachedText}" Margin="0,0,6,0" />
-                        <controls:StatRow Label="スタンバイ" Value="{Binding MemoryStandbyText}" />
-                        <controls:StatRow Label="変更済み" Value="{Binding MemoryModifiedText}" Margin="0,0,6,0" />
-                        <controls:StatRow Label="空き" Value="{Binding MemoryFreeText}" />
-                        <controls:StatRow Label="圧縮済み" Value="{Binding MemoryCompressedText}" Margin="0,0,6,0" />
-                        <controls:StatRow Label="ページプール" Value="{Binding MemoryPoolPagedText}" />
-                        <controls:StatRow Label="非ページプール" Value="{Binding MemoryPoolNonPagedText}" Margin="0,0,6,0" />
                         <controls:StatRow Label="システムキャッシュ" Value="{Binding MemorySystemCacheText}" />
+                        <controls:StatRow Label="ページプール" Value="{Binding MemoryPoolPagedText}" Margin="0,0,6,0" />
+                        <controls:StatRow Label="非ページプール" Value="{Binding MemoryPoolNonPagedText}" />
                     </UniformGrid>
 
                     <UniformGrid Columns="2" Margin="0,0,0,3">

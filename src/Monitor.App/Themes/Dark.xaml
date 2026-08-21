@@ -41,6 +41,15 @@
     <SolidColorBrush x:Key="MemModifiedBrush" Color="#F0A63A" />
     <SolidColorBrush x:Key="MemStandbyBrush" Color="#4EC9F5" />
     <SolidColorBrush x:Key="MemFreeBrush" Color="#33FFFFFF" />
+    <!-- 凡例としてラベルに使う色。バーの色をそのまま文字に流用できない 2 つだけ別に定義する。
+         いずれもバー側の色は変えない（バーの見た目は現状で意図どおりのため）。
+         空き: セグメントは 20% 白でコントラスト比 1.7:1 しかなく読めない。かといって
+               中間グレーにすると既定のラベル色(#9AA0A6)と区別が付かず色分けの意味が消えるので、
+               「白っぽいセグメント」と対応が取れるほぼ白にする。
+         圧縮済み: セグメントの #2E8B57 は 10px では沈むので少しだけ明るくする。
+               使用中(#5BD68A)より濃い緑、という関係は保つ。 -->
+    <SolidColorBrush x:Key="MemFreeLabelBrush" Color="#E8EAEC" />
+    <SolidColorBrush x:Key="MemCompressedLabelBrush" Color="#3FA873" />
     <!-- 「使用中」セグメントの内側に重ね塗りする圧縮済み分。使用中(MemAccentBrush)より濃い同系色。 -->
     <SolidColorBrush x:Key="MemCompressedBrush" Color="#2E8B57" />
     <!-- StackedBar.SegmentBrushes へそのまま渡す並び順: [使用中, 変更済み, スタンバイ, 空き]。 -->
@@ -215,6 +224,7 @@
     <!-- ===== StatRow: ラベル+値の統計行を1行に収める既定スタイル ===== -->
     <Style TargetType="{x:Type controls:StatRow}">
         <Setter Property="ValueBrush" Value="{StaticResource SidebarForegroundBrush}" />
+        <Setter Property="LabelBrush" Value="{StaticResource SidebarSubTextBrush}" />
         <Setter Property="MinHeight" Value="15" />
         <Setter Property="Padding" Value="0,0,0,1" />
         <Setter Property="Template">
@@ -228,7 +238,7 @@
                             </Grid.ColumnDefinitions>
                             <TextBlock Grid.Column="0" Text="{TemplateBinding Label}"
                                        FontFamily="{StaticResource DisplayFontFamily}" FontSize="10"
-                                       Foreground="{StaticResource SidebarSubTextBrush}"
+                                       Foreground="{TemplateBinding LabelBrush}"
                                        TextTrimming="CharacterEllipsis" VerticalAlignment="Center" Margin="0,0,6,0" />
                             <TextBlock Grid.Column="1" Text="{TemplateBinding Value}"
                                        FontFamily="{StaticResource MonoFontFamily}" FontSize="11"

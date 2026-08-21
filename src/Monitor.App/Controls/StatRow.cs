@@ -30,6 +30,12 @@ public sealed class StatRow : Control
         typeof(StatRow),
         new FrameworkPropertyMetadata(null));
 
+    public static readonly DependencyProperty LabelBrushProperty = DependencyProperty.Register(
+        nameof(LabelBrush),
+        typeof(Brush),
+        typeof(StatRow),
+        new FrameworkPropertyMetadata(null));
+
     static StatRow()
     {
         DefaultStyleKeyProperty.OverrideMetadata(typeof(StatRow), new FrameworkPropertyMetadata(typeof(StatRow)));
@@ -54,5 +60,16 @@ public sealed class StatRow : Control
     {
         get => (Brush)GetValue(ValueBrushProperty);
         set => SetValue(ValueBrushProperty, value);
+    }
+
+    /// <summary>
+    /// ラベルテキストの色。未指定なら既定スタイルが SidebarSubTextBrush を適用する。
+    /// メモリの積み上げバーのように、行がグラフ上のセグメントに対応するとき、
+    /// ラベルをそのセグメントと同じ色にして凡例の役割を持たせるために使う。
+    /// </summary>
+    public Brush LabelBrush
+    {
+        get => (Brush)GetValue(LabelBrushProperty);
+        set => SetValue(LabelBrushProperty, value);
     }
 }
