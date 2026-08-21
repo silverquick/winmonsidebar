@@ -187,7 +187,7 @@ public sealed class SectionExpander : HeaderedContentControl
         header.Name = PartHeader;
         header.SetValue(Grid.RowProperty, 0);
         header.SetValue(Border.BackgroundProperty, Brushes.Transparent);
-        header.SetValue(Border.PaddingProperty, new Thickness(0, 6, 0, 6));
+        header.SetValue(Border.PaddingProperty, new Thickness(0, 4, 0, 4));
         header.SetValue(FrameworkElement.CursorProperty, Cursors.Hand);
         header.SetValue(UIElement.SnapsToDevicePixelsProperty, true);
 
@@ -251,7 +251,7 @@ public sealed class SectionExpander : HeaderedContentControl
         FrameworkElementFactory content = new(typeof(ContentPresenter));
         content.Name = PartContent;
         content.SetValue(Grid.RowProperty, 1);
-        content.SetValue(FrameworkElement.MarginProperty, new Thickness(0, 4, 0, 0));
+        content.SetValue(FrameworkElement.MarginProperty, new Thickness(0, 3, 0, 0));
         content.SetValue(ContentPresenter.ContentProperty, new TemplateBindingExtension(ContentControl.ContentProperty));
         content.SetValue(ContentPresenter.ContentTemplateProperty, new TemplateBindingExtension(ContentControl.ContentTemplateProperty));
 

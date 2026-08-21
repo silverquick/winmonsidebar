@@ -5,7 +5,7 @@ namespace Monitor.App.ViewModels;
 
 /// <summary>
 /// メモリモジュール一覧の1行分（1本の DIMM）。SPD 情報は稼働中に変わらないため、
-/// <see cref="DiskRowViewModel"/> 等と違い都度イミュータブルに作り直す。
+/// <see cref="StorageRowViewModel"/> 等と違い都度イミュータブルに作り直す。
 /// </summary>
 public sealed class MemoryModuleRowViewModel
 {

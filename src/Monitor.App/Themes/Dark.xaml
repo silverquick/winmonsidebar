@@ -23,8 +23,14 @@
     <SolidColorBrush x:Key="MemFillBrush" Color="#3A5BD68A" />
     <SolidColorBrush x:Key="DiskAccentBrush" Color="#F0A63A" />
     <SolidColorBrush x:Key="DiskFillBrush" Color="#3AF0A63A" />
+    <!-- ストレージ合計 I/O グラフの書き込み系列（読み込みは DiskAccentBrush と重ねて描く）。 -->
+    <SolidColorBrush x:Key="DiskWriteAccentBrush" Color="#F05A8C" />
+    <SolidColorBrush x:Key="DiskWriteFillBrush" Color="#3AF05A8C" />
     <SolidColorBrush x:Key="NetAccentBrush" Color="#F05A8C" />
     <SolidColorBrush x:Key="NetFillBrush" Color="#3AF05A8C" />
+    <!-- 上りは下りと同系色の明るいトーン。1つのグラフに重ねても区別できるようにする。 -->
+    <SolidColorBrush x:Key="NetUpAccentBrush" Color="#F7A8C4" />
+    <SolidColorBrush x:Key="NetUpFillBrush" Color="#30F7A8C4" />
     <SolidColorBrush x:Key="ThermalAccentBrush" Color="#E0623A" />
     <SolidColorBrush x:Key="ThermalFillBrush" Color="#3AE0623A" />
 
@@ -67,7 +73,7 @@
 
     <Style x:Key="BigNumberStyle" TargetType="TextBlock">
         <Setter Property="FontFamily" Value="{StaticResource MonoFontFamily}" />
-        <Setter Property="FontSize" Value="28" />
+        <Setter Property="FontSize" Value="20" />
         <Setter Property="FontWeight" Value="Bold" />
         <Setter Property="Foreground" Value="{StaticResource SidebarForegroundBrush}" />
     </Style>
@@ -132,14 +138,14 @@
         <Setter Property="FontSize" Value="11" />
         <Setter Property="Foreground" Value="{StaticResource SidebarSubTextBrush}" />
         <Setter Property="TextWrapping" Value="Wrap" />
-        <Setter Property="Margin" Value="0,0,0,8" />
+        <Setter Property="Margin" Value="0,0,0,4" />
     </Style>
 
     <Style x:Key="ElevationButtonStyle" TargetType="Button">
         <Setter Property="FontFamily" Value="{StaticResource DisplayFontFamily}" />
         <Setter Property="FontSize" Value="11" />
         <Setter Property="Foreground" Value="{StaticResource SidebarForegroundBrush}" />
-        <Setter Property="Padding" Value="10,6" />
+        <Setter Property="Padding" Value="8,3" />
         <Setter Property="Cursor" Value="Hand" />
         <Setter Property="HorizontalAlignment" Value="Left" />
         <Setter Property="Template">
@@ -169,12 +175,27 @@
         <Setter Property="Margin" Value="16,4,16,4" />
     </Style>
 
-    <!-- ===== ドライブ一覧の使用率バー。90%以上は警告色に切り替える ===== -->
-    <Style x:Key="VolumeGaugeBarStyle" TargetType="controls:GaugeBar">
+    <!-- ===== ストレージ一覧の使用率バー。90%以上は警告色に切り替える ===== -->
+    <Style x:Key="StorageGaugeBarStyle" TargetType="controls:GaugeBar">
         <Setter Property="Foreground" Value="{StaticResource DiskAccentBrush}" />
         <Style.Triggers>
             <DataTrigger Binding="{Binding IsWarning}" Value="True">
                 <Setter Property="Foreground" Value="{StaticResource WarningBrush}" />
+            </DataTrigger>
+        </Style.Triggers>
+    </Style>
+
+    <!-- ストレージ一覧の行。区切り線を使わず、偶数行にごく薄い背景を敷いて縞にする。
+         未準備（IsReady=False）のドライブは薄く表示する。 -->
+    <Style x:Key="StorageRowStyle" TargetType="Border">
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="MinHeight" Value="16" />
+        <Style.Triggers>
+            <DataTrigger Binding="{Binding RelativeSource={RelativeSource AncestorType=ContentPresenter}, Path=(ItemsControl.AlternationIndex)}" Value="1">
+                <Setter Property="Background" Value="#08FFFFFF" />
+            </DataTrigger>
+            <DataTrigger Binding="{Binding IsReady}" Value="False">
+                <Setter Property="Opacity" Value="0.45" />
             </DataTrigger>
         </Style.Triggers>
     </Style>
@@ -189,6 +210,35 @@
         <Setter Property="Foreground" Value="{StaticResource SidebarSubTextBrush}" />
         <Setter Property="HorizontalAlignment" Value="Right" />
         <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+    </Style>
+
+    <!-- ===== StatRow: ラベル+値の統計行を1行に収める既定スタイル ===== -->
+    <Style TargetType="{x:Type controls:StatRow}">
+        <Setter Property="ValueBrush" Value="{StaticResource SidebarForegroundBrush}" />
+        <Setter Property="MinHeight" Value="15" />
+        <Setter Property="Padding" Value="0,0,0,1" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="{x:Type controls:StatRow}">
+                    <Border Padding="{TemplateBinding Padding}" Background="Transparent">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="{TemplateBinding Label}"
+                                       FontFamily="{StaticResource DisplayFontFamily}" FontSize="10"
+                                       Foreground="{StaticResource SidebarSubTextBrush}"
+                                       TextTrimming="CharacterEllipsis" VerticalAlignment="Center" Margin="0,0,6,0" />
+                            <TextBlock Grid.Column="1" Text="{TemplateBinding Value}"
+                                       FontFamily="{StaticResource MonoFontFamily}" FontSize="11"
+                                       Foreground="{TemplateBinding ValueBrush}"
+                                       VerticalAlignment="Center" HorizontalAlignment="Right" />
+                        </Grid>
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
     </Style>
 
 </ResourceDictionary>

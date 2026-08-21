@@ -33,16 +33,14 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
         _topProcessCount = Math.Max(1, settings.TopProcessCount);
 
         Processes = new ObservableCollection<ProcessRowViewModel>();
-        DiskRows = new ObservableCollection<DiskRowViewModel>();
-        VolumeRows = new ObservableCollection<VolumeRowViewModel>();
+        StorageRows = new ObservableCollection<StorageRowViewModel>();
 
         // 展開状態を設定から復元する。setter を経由すると保存を誘発するため、フィールドへ直接代入する。
         _isCpuExpanded = GetExpanded("cpu");
         _isGpuExpanded = GetExpanded("gpu");
         _isMemoryExpanded = GetExpanded("memory");
         _isMemoryModulesExpanded = GetExpanded("memory-modules", defaultValue: false);
-        _isDiskExpanded = GetExpanded("disk");
-        _isVolumesExpanded = GetExpanded("volumes");
+        _isStorageExpanded = GetExpanded("storage");
         _isNetworkExpanded = GetExpanded("network");
         _isNetworkAllExpanded = GetExpanded("network-all", defaultValue: false);
         _isThermalExpanded = GetExpanded("thermal");
@@ -70,9 +68,7 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
 
     public ObservableCollection<ProcessRowViewModel> Processes { get; }
 
-    public ObservableCollection<DiskRowViewModel> DiskRows { get; }
-
-    public ObservableCollection<VolumeRowViewModel> VolumeRows { get; }
+    public ObservableCollection<StorageRowViewModel> StorageRows { get; }
 
     // ----- ヘッダー -----
     private string _headerTime = string.Empty;
@@ -95,11 +91,8 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
     private bool _isMemoryModulesExpanded;
     public bool IsMemoryModulesExpanded { get => _isMemoryModulesExpanded; set => SetExpanded("memory-modules", value, ref _isMemoryModulesExpanded); }
 
-    private bool _isDiskExpanded;
-    public bool IsDiskExpanded { get => _isDiskExpanded; set => SetExpanded("disk", value, ref _isDiskExpanded); }
-
-    private bool _isVolumesExpanded;
-    public bool IsVolumesExpanded { get => _isVolumesExpanded; set => SetExpanded("volumes", value, ref _isVolumesExpanded); }
+    private bool _isStorageExpanded;
+    public bool IsStorageExpanded { get => _isStorageExpanded; set => SetExpanded("storage", value, ref _isStorageExpanded); }
 
     private bool _isNetworkExpanded;
     public bool IsNetworkExpanded { get => _isNetworkExpanded; set => SetExpanded("network", value, ref _isNetworkExpanded); }
@@ -123,11 +116,8 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
     private string _memorySummary = string.Empty;
     public string MemorySummary { get => _memorySummary; private set => SetProperty(ref _memorySummary, value); }
 
-    private string _diskSummary = string.Empty;
-    public string DiskSummary { get => _diskSummary; private set => SetProperty(ref _diskSummary, value); }
-
-    private string _volumesSummary = string.Empty;
-    public string VolumesSummary { get => _volumesSummary; private set => SetProperty(ref _volumesSummary, value); }
+    private string _storageSummary = string.Empty;
+    public string StorageSummary { get => _storageSummary; private set => SetProperty(ref _storageSummary, value); }
 
     private string _memoryModulesSummary = string.Empty;
     public string MemoryModulesSummary { get => _memoryModulesSummary; private set => SetProperty(ref _memoryModulesSummary, value); }
@@ -292,21 +282,15 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
     private IReadOnlyList<PageFileRowViewModel> _pageFileRows = Array.Empty<PageFileRowViewModel>();
     public IReadOnlyList<PageFileRowViewModel> PageFileRows { get => _pageFileRows; private set => SetProperty(ref _pageFileRows, value); }
 
-    // ----- ディスク -----
-    private string _diskReadText = string.Empty;
-    public string DiskReadText { get => _diskReadText; private set => SetProperty(ref _diskReadText, value); }
-
-    private string _diskWriteText = string.Empty;
-    public string DiskWriteText { get => _diskWriteText; private set => SetProperty(ref _diskWriteText, value); }
+    // ----- ストレージ -----
+    private string _diskIoLineText = string.Empty;
+    public string DiskIoLineText { get => _diskIoLineText; private set => SetProperty(ref _diskIoLineText, value); }
 
     private float[] _diskReadSparkline = Array.Empty<float>();
     public float[] DiskReadSparkline { get => _diskReadSparkline; private set => SetProperty(ref _diskReadSparkline, value); }
 
     private float[] _diskWriteSparkline = Array.Empty<float>();
     public float[] DiskWriteSparkline { get => _diskWriteSparkline; private set => SetProperty(ref _diskWriteSparkline, value); }
-
-    private double _diskBusyGaugeValue;
-    public double DiskBusyGaugeValue { get => _diskBusyGaugeValue; private set => SetProperty(ref _diskBusyGaugeValue, value); }
 
     // ----- ネットワーク -----
     private string _networkNicName = string.Empty;
@@ -374,8 +358,7 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
         ApplyCpu(s.Cpu, s.Thermal);
         ApplyGpu(s.Gpu);
         ApplyMemory(s.Memory);
-        ApplyDisk(s.Disk, s.Thermal);
-        ApplyVolumes(s.Volumes);
+        ApplyStorage(s.Disk, s.Volumes, s.Thermal);
         ApplyNetwork(s.Network);
         ApplyThermal(s.Thermal);
         UpdateProcesses(s.Processes.Processes);
@@ -564,18 +547,243 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
         return rows;
     }
 
-    private void ApplyDisk(DiskSnapshot disk, ThermalSnapshot thermal)
+    /// <summary>
+    /// 「ストレージ」セクション（物理ディスク + 論理ボリューム統合）を組み立てる。
+    /// 論理ボリュームを主軸にドライブレター昇順で並べ、<see cref="VolumeSnapshot.PhysicalDriveNumber"/> から
+    /// 対応する物理ディスクの R/W・温度を引く。同じ物理ディスクに複数のボリュームがある場合は、
+    /// ドライブレターが最も若い（=先頭に並ぶ）ボリュームの行にだけ R/W・温度を載せ、以降の行は空欄にする
+    /// （例: 実機で J: と P: がともに PhysicalDrive 0 に解決される場合、J: にだけ値を出す）。
+    /// どのボリュームにも紐づかない物理ディスクがあれば、末尾に "#{番号}" キーの行を追加する。
+    /// </summary>
+    private void ApplyStorage(DiskSnapshot disk, IReadOnlyList<VolumeSnapshot> volumes, ThermalSnapshot thermal)
     {
-        DiskReadText = "読み取り " + ByteFormatter.BytesPerSec(disk.TotalReadBytesPerSec);
-        DiskWriteText = "書き込み " + ByteFormatter.BytesPerSec(disk.TotalWriteBytesPerSec);
+        DiskIoLineText = string.Create(
+            CultureInfo.InvariantCulture,
+            $"R {ByteFormatter.BytesPerSec(disk.TotalReadBytesPerSec)}   W {ByteFormatter.BytesPerSec(disk.TotalWriteBytesPerSec)}");
         DiskReadSparkline = _hub.History.Snapshot(MetricSeries.DiskReadBytesPerSec);
         DiskWriteSparkline = _hub.History.Snapshot(MetricSeries.DiskWriteBytesPerSec);
-        DiskBusyGaugeValue = disk.BusyPercent;
-        DiskSummary = string.Create(
-            CultureInfo.InvariantCulture,
-            $"R {ByteFormatter.BytesPerSec(disk.TotalReadBytesPerSec)} · W {ByteFormatter.BytesPerSec(disk.TotalWriteBytesPerSec)}");
 
-        UpdateDiskRows(disk.Devices, thermal.StorageTemperatures);
+        var devicesByNumber = new Dictionary<int, DiskDeviceSnapshot>();
+        foreach (DiskDeviceSnapshot d in disk.Devices)
+        {
+            devicesByNumber[d.PhysicalDriveNumber] = d;
+        }
+
+        VolumeSnapshot[] sortedVolumes = volumes.ToArray();
+        Array.Sort(sortedVolumes, (a, b) => string.CompareOrdinal(a.DriveLetter, b.DriveLetter));
+
+        // 物理ディスク番号 → その番号を最初に参照するボリュームのドライブレター（＝R/W・温度を表示する行）。
+        var firstVolumeForDisk = new Dictionary<int, string>();
+        foreach (VolumeSnapshot v in sortedVolumes)
+        {
+            if (v.PhysicalDriveNumber is int pd0 && !firstVolumeForDisk.ContainsKey(pd0))
+            {
+                firstVolumeForDisk[pd0] = v.DriveLetter;
+            }
+        }
+
+        var usedDiskNumbers = new HashSet<int>();
+        var desiredKeys = new List<string>(sortedVolumes.Length + disk.Devices.Count);
+        var applyActions = new Dictionary<string, Action<StorageRowViewModel>>(sortedVolumes.Length + disk.Devices.Count);
+
+        ulong totalCapacityBytes = 0;
+        ulong usedCapacityBytes = 0;
+
+        foreach (VolumeSnapshot v in sortedVolumes)
+        {
+            string key = v.DriveLetter;
+            desiredKeys.Add(key);
+
+            DiskDeviceSnapshot? device = null;
+            if (v.PhysicalDriveNumber is int pd && devicesByNumber.TryGetValue(pd, out DiskDeviceSnapshot dd))
+            {
+                device = dd;
+                usedDiskNumbers.Add(pd);
+            }
+
+            if (v.Kind != VolumeKind.Network && v.IsReady && v.TotalBytes > 0)
+            {
+                totalCapacityBytes += v.TotalBytes;
+                usedCapacityBytes += v.UsedBytes;
+            }
+
+            string driveLetterText = v.DriveLetter;
+            string labelText = v.Kind == VolumeKind.Network
+                ? (v.NetworkPath ?? "")
+                : (string.IsNullOrWhiteSpace(v.Label) ? "" : v.Label!);
+            bool isNetwork = v.Kind == VolumeKind.Network;
+            bool isReady = v.IsReady;
+            bool hasCapacity = v.IsReady && v.TotalBytes > 0;
+            string usagePercentText = v.IsReady ? ByteFormatter.Percent(v.UsedPercent) : "—";
+            double usedPercent = v.UsedPercent;
+            string freeText = v.IsReady ? ByteFormatter.Bytes(v.FreeBytes) : "—";
+
+            string readText;
+            string writeText;
+            string temperatureText;
+            if (device is null)
+            {
+                // ネットワークドライブ、またはローカルでも物理ディスクへ解決できないボリューム。
+                readText = "—";
+                writeText = "—";
+                temperatureText = "—";
+            }
+            else if (firstVolumeForDisk.TryGetValue(device.PhysicalDriveNumber, out string? firstLetter) && firstLetter == key)
+            {
+                readText = ShortRate(device.ReadBytesPerSec);
+                writeText = ShortRate(device.WriteBytesPerSec);
+                double? temperature = device.TemperatureC ?? FindStorageTemperature(thermal.StorageTemperatures, device.Model);
+                temperatureText = ByteFormatter.Temperature(temperature);
+            }
+            else
+            {
+                // 同じ物理ディスクを参照する2行目以降は重複表示を避けて空欄にする。
+                readText = "";
+                writeText = "";
+                temperatureText = "";
+            }
+
+            string tooltipText = BuildStorageTooltip(device);
+
+            applyActions[key] = row => row.Update(
+                driveLetterText, labelText, isNetwork, isReady, hasCapacity, usedPercent,
+                usagePercentText, freeText, readText, writeText, temperatureText, tooltipText);
+        }
+
+        DiskDeviceSnapshot[] orphanDevices = disk.Devices
+            .Where(d => !usedDiskNumbers.Contains(d.PhysicalDriveNumber))
+            .OrderBy(d => d.PhysicalDriveNumber)
+            .ToArray();
+
+        foreach (DiskDeviceSnapshot d in orphanDevices)
+        {
+            string key = "#" + d.PhysicalDriveNumber.ToString(CultureInfo.InvariantCulture);
+            desiredKeys.Add(key);
+
+            string driveLetterText = string.IsNullOrEmpty(d.DisplayName) ? $"Disk {d.PhysicalDriveNumber}" : d.DisplayName;
+            string labelText = string.IsNullOrWhiteSpace(d.Model) ? "不明なドライブ" : d.Model;
+            string readText = ShortRate(d.ReadBytesPerSec);
+            string writeText = ShortRate(d.WriteBytesPerSec);
+            double? temperature = d.TemperatureC ?? FindStorageTemperature(thermal.StorageTemperatures, d.Model);
+            string temperatureText = ByteFormatter.Temperature(temperature);
+            string tooltipText = BuildStorageTooltip(d);
+
+            applyActions[key] = row => row.Update(
+                driveLetterText, labelText, false, true, false, 0.0,
+                "—", "—", readText, writeText, temperatureText, tooltipText);
+        }
+
+        UpdateStorageRows(desiredKeys, applyActions);
+
+        double overallPercent = totalCapacityBytes > 0 ? 100.0 * usedCapacityBytes / totalCapacityBytes : 0.0;
+        _ = overallPercent; // 現状 StorageSummary には出さないが、将来の拡張用に計算だけは保持する。
+
+        StorageSummary = string.Create(
+            CultureInfo.InvariantCulture,
+            $"{sortedVolumes.Length} ドライブ · R {ShortRate(disk.TotalReadBytesPerSec)} W {ShortRate(disk.TotalWriteBytesPerSec)}");
+    }
+
+    /// <summary>
+    /// 全ストレージ行（ボリューム + ボリューム無し物理ディスク）を <see cref="StorageRowViewModel.Key"/> で
+    /// 照合しながら差分更新する。毎回 Clear→Add するとちらつくため、足りない/余る分だけ追加削除する
+    /// （<see cref="UpdateProcesses"/> と同じ方針）。<paramref name="desiredKeys"/> の順序を維持する。
+    /// </summary>
+    private void UpdateStorageRows(List<string> desiredKeys, Dictionary<string, Action<StorageRowViewModel>> applyActions)
+    {
+        for (int i = StorageRows.Count - 1; i >= 0; i--)
+        {
+            if (!desiredKeys.Contains(StorageRows[i].Key))
+            {
+                StorageRows.RemoveAt(i);
+            }
+        }
+
+        for (int i = 0; i < desiredKeys.Count; i++)
+        {
+            string key = desiredKeys[i];
+
+            int existingIndex = -1;
+            for (int j = 0; j < StorageRows.Count; j++)
+            {
+                if (StorageRows[j].Key == key)
+                {
+                    existingIndex = j;
+                    break;
+                }
+            }
+
+            if (existingIndex < 0)
+            {
+                var row = new StorageRowViewModel(key);
+                applyActions[key](row);
+                int insertIndex = Math.Min(i, StorageRows.Count);
+                StorageRows.Insert(insertIndex, row);
+            }
+            else
+            {
+                applyActions[key](StorageRows[existingIndex]);
+                if (existingIndex != i)
+                {
+                    StorageRows.Move(existingIndex, i);
+                }
+            }
+        }
+    }
+
+    private static string BuildStorageTooltip(DiskDeviceSnapshot? device)
+    {
+        if (device is null)
+        {
+            return "";
+        }
+
+        var parts = new List<string>(4);
+        if (!string.IsNullOrWhiteSpace(device.Model))
+        {
+            parts.Add(device.Model);
+        }
+
+        if (!string.IsNullOrEmpty(device.BusType))
+        {
+            parts.Add(device.BusType + (device.IsSsd ? " SSD" : " HDD"));
+        }
+
+        if (device.CapacityBytes > 0)
+        {
+            parts.Add(ByteFormatter.Bytes(device.CapacityBytes));
+        }
+
+        parts.Add(string.Create(CultureInfo.InvariantCulture, $"物理ディスク {device.PhysicalDriveNumber}"));
+        parts.Add(string.Create(CultureInfo.InvariantCulture, $"Busy {ByteFormatter.Percent(device.BusyPercent)}"));
+
+        return string.Join(" · ", parts);
+    }
+
+    /// <summary>
+    /// ストレージ行専用の極短縮レート表示。視覚ノイズを減らすため単位は1文字のみ、区切り記号やスペースは付けない。
+    /// 1024基数で 999 / 12M / 1.2G のように整形し、実質ゼロ（1 B/s 未満）は控えめな "·" にする。
+    /// </summary>
+    private static string ShortRate(double bytesPerSec)
+    {
+        double v = bytesPerSec;
+        if (double.IsNaN(v) || double.IsInfinity(v) || v < 1.0)
+        {
+            return "·";
+        }
+
+        string[] units = ["", "K", "M", "G", "T"];
+        int unitIndex = 0;
+        while (v >= 1024.0 && unitIndex < units.Length - 1)
+        {
+            v /= 1024.0;
+            unitIndex++;
+        }
+
+        string numberText = unitIndex == 0
+            ? Math.Round(v).ToString(CultureInfo.InvariantCulture)
+            : (v < 10.0 ? v.ToString("F1", CultureInfo.InvariantCulture) : Math.Round(v).ToString(CultureInfo.InvariantCulture));
+
+        return numberText + units[unitIndex];
     }
 
     private void ApplyNetwork(NetworkSnapshot network)
@@ -627,80 +835,6 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
         }
 
         return rows;
-    }
-
-    /// <summary>
-    /// 全論理ドライブを DriveLetter で照合しながら差分更新する。毎回 Clear→Add するとちらつくため、
-    /// 足りない/余る分だけ追加削除する（<see cref="UpdateDiskRows"/> と同じ方針）。ドライブレター昇順を維持する。
-    /// </summary>
-    private void ApplyVolumes(IReadOnlyList<VolumeSnapshot> volumes)
-    {
-        VolumeSnapshot[] sorted = volumes.ToArray();
-        Array.Sort(sorted, (a, b) => string.CompareOrdinal(a.DriveLetter, b.DriveLetter));
-
-        for (int i = VolumeRows.Count - 1; i >= 0; i--)
-        {
-            string driveLetter = VolumeRows[i].DriveLetter;
-            bool stillPresent = false;
-            for (int j = 0; j < sorted.Length; j++)
-            {
-                if (sorted[j].DriveLetter == driveLetter)
-                {
-                    stillPresent = true;
-                    break;
-                }
-            }
-
-            if (!stillPresent)
-            {
-                VolumeRows.RemoveAt(i);
-            }
-        }
-
-        ulong totalBytes = 0;
-        ulong usedBytes = 0;
-
-        for (int i = 0; i < sorted.Length; i++)
-        {
-            VolumeSnapshot v = sorted[i];
-
-            if (v.Kind != VolumeKind.Network && v.IsReady && v.TotalBytes > 0)
-            {
-                totalBytes += v.TotalBytes;
-                usedBytes += v.UsedBytes;
-            }
-
-            int existingIndex = -1;
-            for (int j = 0; j < VolumeRows.Count; j++)
-            {
-                if (VolumeRows[j].DriveLetter == v.DriveLetter)
-                {
-                    existingIndex = j;
-                    break;
-                }
-            }
-
-            if (existingIndex < 0)
-            {
-                var row = new VolumeRowViewModel(v.DriveLetter);
-                row.Update(v);
-                int insertIndex = Math.Min(i, VolumeRows.Count);
-                VolumeRows.Insert(insertIndex, row);
-            }
-            else
-            {
-                VolumeRows[existingIndex].Update(v);
-                if (existingIndex != i)
-                {
-                    VolumeRows.Move(existingIndex, i);
-                }
-            }
-        }
-
-        double overallPercent = totalBytes > 0 ? 100.0 * usedBytes / totalBytes : 0.0;
-        VolumesSummary = string.Create(
-            CultureInfo.InvariantCulture,
-            $"{sorted.Length} ドライブ · 使用 {overallPercent:F0}%");
     }
 
     private void ApplyThermal(ThermalSnapshot thermal)
@@ -758,64 +892,6 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
     /// 全ドライブを PhysicalDriveNumber で照合しながら差分更新する。毎回 Clear→Add するとちらつくため、
     /// 足りない/余る分だけ追加削除する（プロセス一覧の差分更新と同じ方針）。
     /// </summary>
-    private void UpdateDiskRows(IReadOnlyList<DiskDeviceSnapshot> devices, IReadOnlyList<SensorReading> storageTemperatures)
-    {
-        for (int i = DiskRows.Count - 1; i >= 0; i--)
-        {
-            int driveNumber = DiskRows[i].PhysicalDriveNumber;
-            bool stillPresent = false;
-            for (int j = 0; j < devices.Count; j++)
-            {
-                if (devices[j].PhysicalDriveNumber == driveNumber)
-                {
-                    stillPresent = true;
-                    break;
-                }
-            }
-
-            if (!stillPresent)
-            {
-                DiskRows.RemoveAt(i);
-            }
-        }
-
-        for (int i = 0; i < devices.Count; i++)
-        {
-            DiskDeviceSnapshot device = devices[i];
-
-            // StorageApi (管理者不要) が温度を取れなかったドライブだけ、LHM (管理者時) の値で補う。
-            double? overrideTemperature = device.TemperatureC is null
-                ? FindStorageTemperature(storageTemperatures, device.Model)
-                : null;
-
-            int existingIndex = -1;
-            for (int j = 0; j < DiskRows.Count; j++)
-            {
-                if (DiskRows[j].PhysicalDriveNumber == device.PhysicalDriveNumber)
-                {
-                    existingIndex = j;
-                    break;
-                }
-            }
-
-            if (existingIndex < 0)
-            {
-                var row = new DiskRowViewModel(device.PhysicalDriveNumber);
-                row.Update(device, overrideTemperature);
-                int insertIndex = Math.Min(i, DiskRows.Count);
-                DiskRows.Insert(insertIndex, row);
-            }
-            else
-            {
-                DiskRows[existingIndex].Update(device, overrideTemperature);
-                if (existingIndex != i)
-                {
-                    DiskRows.Move(existingIndex, i);
-                }
-            }
-        }
-    }
-
     private static double? FindStorageTemperature(IReadOnlyList<SensorReading> storageTemperatures, string model)
     {
         if (string.IsNullOrWhiteSpace(model))
