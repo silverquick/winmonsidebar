@@ -249,7 +249,18 @@
                                        SectionSummary="{Binding StorageSummary}" IsExpanded="{Binding IsStorageExpanded}"
                                        Margin="12,0,12,0">
                 <StackPanel>
-                    <TextBlock Text="{Binding DiskIoLineText}" Style="{StaticResource SubTextStyle}" Margin="0,0,0,2" />
+                    <!-- 読み・書きの値をグラフの線と同じ色にして凡例を兼ねさせる
+                         （ネットワークの下り・上りと同じ考え方）。 -->
+                    <Grid Margin="0,0,0,2">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0" Text="{Binding DiskReadLineText}" Style="{StaticResource SubTextStyle}"
+                                   Foreground="{StaticResource DiskAccentBrush}" />
+                        <TextBlock Grid.Column="1" Text="{Binding DiskWriteLineText}" Style="{StaticResource SubTextStyle}"
+                                   Foreground="{StaticResource DiskWriteAccentBrush}" />
+                    </Grid>
                     <!-- 読み込み・書き込みを1つのグラフに重ねる（Sparkline 自体は1系列描画なので2つ重ねる）。 -->
                     <Grid Height="28" Margin="0,0,0,4">
                         <controls:Sparkline Values="{Binding DiskReadSparkline}" AutoScale="True"
@@ -294,8 +305,12 @@
                                                    Visibility="{Binding HasCapacity, Converter={StaticResource BoolToVisibilityConverter}}" />
                                         <TextBlock Grid.Column="5" Text="{Binding FreeText}" Style="{StaticResource ProcessValueStyle}" Margin="0,0,6,0"
                                                    Visibility="{Binding HasCapacity, Converter={StaticResource BoolToVisibilityConverter}}" />
-                                        <TextBlock Grid.Column="6" Text="{Binding ReadText}" Style="{StaticResource ProcessValueStyle}" Margin="0,0,6,0" />
-                                        <TextBlock Grid.Column="7" Text="{Binding WriteText}" Style="{StaticResource ProcessValueStyle}" Margin="0,0,6,0" />
+                                        <!-- 読み・書きの列には見出しが無いので、上のグラフと同じ色を付けて
+                                             どちらの列かが色で分かるようにする。 -->
+                                        <TextBlock Grid.Column="6" Text="{Binding ReadText}" Style="{StaticResource ProcessValueStyle}" Margin="0,0,6,0"
+                                                   Foreground="{StaticResource DiskAccentBrush}" />
+                                        <TextBlock Grid.Column="7" Text="{Binding WriteText}" Style="{StaticResource ProcessValueStyle}" Margin="0,0,6,0"
+                                                   Foreground="{StaticResource DiskWriteAccentBrush}" />
                                         <TextBlock Grid.Column="8" Text="{Binding TemperatureText}" Style="{StaticResource ProcessValueStyle}" />
                                     </Grid>
                                 </Border>

@@ -283,8 +283,13 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
     public IReadOnlyList<PageFileRowViewModel> PageFileRows { get => _pageFileRows; private set => SetProperty(ref _pageFileRows, value); }
 
     // ----- ストレージ -----
-    private string _diskIoLineText = string.Empty;
-    public string DiskIoLineText { get => _diskIoLineText; private set => SetProperty(ref _diskIoLineText, value); }
+    // 読み込みと書き込みは 1 つのグラフに 2 色で重ねて描いているので、値も系列ごとに分けて持ち、
+    // XAML 側でグラフの線と同じ色を付けて凡例を兼ねさせる。
+    private string _diskReadLineText = string.Empty;
+    public string DiskReadLineText { get => _diskReadLineText; private set => SetProperty(ref _diskReadLineText, value); }
+
+    private string _diskWriteLineText = string.Empty;
+    public string DiskWriteLineText { get => _diskWriteLineText; private set => SetProperty(ref _diskWriteLineText, value); }
 
     private float[] _diskReadSparkline = Array.Empty<float>();
     public float[] DiskReadSparkline { get => _diskReadSparkline; private set => SetProperty(ref _diskReadSparkline, value); }
@@ -557,9 +562,12 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
     /// </summary>
     private void ApplyStorage(DiskSnapshot disk, IReadOnlyList<VolumeSnapshot> volumes, ThermalSnapshot thermal)
     {
-        DiskIoLineText = string.Create(
+        DiskReadLineText = string.Create(
             CultureInfo.InvariantCulture,
-            $"R {ByteFormatter.BytesPerSec(disk.TotalReadBytesPerSec)}   W {ByteFormatter.BytesPerSec(disk.TotalWriteBytesPerSec)}");
+            $"R {ByteFormatter.BytesPerSec(disk.TotalReadBytesPerSec)}");
+        DiskWriteLineText = string.Create(
+            CultureInfo.InvariantCulture,
+            $"W {ByteFormatter.BytesPerSec(disk.TotalWriteBytesPerSec)}");
         DiskReadSparkline = _hub.History.Snapshot(MetricSeries.DiskReadBytesPerSec);
         DiskWriteSparkline = _hub.History.Snapshot(MetricSeries.DiskWriteBytesPerSec);
 
