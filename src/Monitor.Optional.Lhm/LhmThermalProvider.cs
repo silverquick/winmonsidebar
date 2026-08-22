@@ -276,6 +276,18 @@ public sealed class LhmThermalProvider : IThermalProvider
             return;
         }
 
+        // 温度センサーはここで妥当性を検査し、あり得ない値は「取得不能」として捨てる。
+        //
+        // これが要るのは、必要なカーネルモジュールが使えないときに LHM が例外を出さず
+        // 0.00 を返すため。実機でも PawnIO を入れる前は CPU パッケージ温度が 0.0 で返り、
+        // 未接続の Super I/O 入力や一部の古い SATA SSD（INTEL SSDSC2CT120A3）も 0.0 を返す。
+        // 素通しすると画面に「0.0°C」と出てしまい、本プロジェクトの
+        // 「0°C と『取れない』を混同させない」という原則が崩れる。
+        if (sensor.SensorType == SensorType.Temperature && !IsPlausibleTemperature(value))
+        {
+            return;
+        }
+
         // ---- CPU 温度 ----
         if (hwType == HardwareType.Cpu && sensor.SensorType == SensorType.Temperature)
         {
@@ -327,9 +339,16 @@ public sealed class LhmThermalProvider : IThermalProvider
         // ---- ディスク温度（モデル名で照合できるよう hw.Name を使う） ----
         if (hwType == HardwareType.Storage && sensor.SensorType == SensorType.Temperature)
         {
-            storageTemps.Add(new SensorReading(hw.Name ?? name, value));
+            // hw.Name は末尾に空白が入ることがある（例: "INTEL SSDSC2CT120A3      "）。
+            // 呼び出し側はモデル名で照合するので、ここで詰めておく。
+            storageTemps.Add(new SensorReading((hw.Name ?? name).Trim(), value));
         }
     }
+
+    /// <summary>
+    /// 温度として現実的な範囲か。0 以下と 150°C 超はセンサーが読めていないときの値とみなす。
+    /// </summary>
+    private static bool IsPlausibleTemperature(double celsius) => celsius > 0.0 && celsius < 150.0;
 
     /// <summary>
     /// 全ハードウェア（サブハードウェアも含む）の値を更新してから走査するための Visitor。

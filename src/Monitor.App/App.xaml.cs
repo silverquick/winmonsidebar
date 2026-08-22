@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using System.Globalization;
+using System.Security.Principal;
 using System.Threading;
 using System.Windows;
 using System.Windows.Threading;
@@ -6,6 +8,7 @@ using Monitor.App.Diagnostics;
 using Monitor.App.Settings;
 using Monitor.App.Views;
 using Monitor.Core;
+using Monitor.Core.Models;
 using Monitor.Optional.Lhm;
 using Monitor.Vendors.Nvidia;
 using Monitor.Windows.Providers;
@@ -32,27 +35,43 @@ public partial class App : Application
 
         DispatcherUnhandledException += OnDispatcherUnhandledException;
 
-        bool createdNew;
+        // AppBar が二重登録されると作業領域が二重に削られるため、多重起動は許さない。
+        //
+        // ただし単純に「取れなければ即終了」にすると「管理者で再起動」が競合で失敗する。
+        // 旧インスタンスは Process.Start(runas) の直後に Shutdown() するが、昇格した新プロセスの
+        // .NET/WPF 起動には 1 秒近くかかる一方、Process.Start はプロセス生成時点で戻るため、
+        // 新旧どちらが先にミューテックスへ到達するかはタイミング次第になる。新プロセスが先に
+        // 見に行くと「既に起動中」と判断して即終了し、その後で旧プロセスも終了するので、
+        // 「UAC を承認したのにアプリが消える（または昇格しないまま残る）」という結果になる。
+        // そこで少しの間だけ待ってから諦める。真の多重起動ではこの待ち時間のあと終了する。
         try
         {
-            _singleInstanceMutex = new Mutex(initiallyOwned: true, SingleInstanceMutexName, out createdNew);
+            _singleInstanceMutex = new Mutex(initiallyOwned: false, SingleInstanceMutexName);
+            try
+            {
+                _ownsSingleInstanceMutex = _singleInstanceMutex.WaitOne(TimeSpan.FromSeconds(5));
+            }
+            catch (AbandonedMutexException)
+            {
+                // 前のインスタンスが解放せずに落ちた場合。所有権はこちらに移っている。
+                _ownsSingleInstanceMutex = true;
+            }
         }
         catch
         {
-            // Mutex 自体が作れない異常な環境では、多重起動チェックより起動を優先する。
-            createdNew = true;
+            // ミューテックス自体が作れない異常な環境では、多重起動チェックより起動を優先する。
+            _singleInstanceMutex = null;
+            _ownsSingleInstanceMutex = false;
         }
 
-        _ownsSingleInstanceMutex = createdNew;
-
-        if (!createdNew)
+        if (_singleInstanceMutex is not null && !_ownsSingleInstanceMutex)
         {
-            // AppBar が二重登録されると作業領域が二重に削られるため、既に起動中なら即終了する。
             Shutdown();
             return;
         }
 
         AppLog.Write("startup: begin");
+        AppLog.Write($"startup: elevated={IsElevated()}");
 
         AppSettings settings = SettingsStore.Load();
 
@@ -70,6 +89,54 @@ public partial class App : Application
             new ProcessProvider(),
             new LhmThermalProvider(),
             new VolumeProvider());
+
+        // 温度・ファンは権限とハードウェアに強く依存し、取れないときの原因が画面からは分からない。
+        // 「管理者で起動したのに温度が出ない」ときに、権限・プロバイダ・センサーのどこで
+        // 止まっているのかをログだけで切り分けられるよう、最初の取得結果を 1 度だけ記録する。
+        var thermalLogged = false;
+        var snapshotsSeen = 0;
+        _hub.SnapshotAvailable += snapshot =>
+        {
+            if (thermalLogged)
+            {
+                return;
+            }
+
+            snapshotsSeen++;
+            ThermalSnapshot t = snapshot.Thermal;
+            if (!t.IsAvailable && snapshotsSeen < 5)
+            {
+                // 最初の数回はまだ Thermal のサンプリング周期（SlowInterval）に入っていない可能性がある。
+                return;
+            }
+
+            thermalLogged = true;
+            AppLog.Write(
+                $"thermal: available={t.IsAvailable} elevated={t.IsElevated} source={t.Source} " +
+                $"cpuPackage={Fmt(t.CpuPackageTemperatureC)} cpuCores={t.CpuCoreTemperatures.Count} " +
+                $"cpuPower={Fmt(t.CpuPackagePowerWatts)} motherboard={Fmt(t.MotherboardTemperatureC)} " +
+                $"vrm={Fmt(t.VrmTemperatureC)} fans={t.Fans.Count} " +
+                $"otherTemps={t.OtherTemperatures.Count} storageTemps={t.StorageTemperatures.Count}");
+
+            // センサー名はマザーボードごとに違い、VRM がどの名前で出てくるかは実機を見ないと分からない。
+            // 振り分け（VrmTemperatureC か OtherTemperatures か）を調整できるよう名前も残す。
+            if (t.IsAvailable)
+            {
+                AppLog.Write("thermal: cores    = " + Names(t.CpuCoreTemperatures));
+                AppLog.Write("thermal: others   = " + Names(t.OtherTemperatures));
+                AppLog.Write("thermal: fans     = " + Names(t.Fans));
+                AppLog.Write("thermal: storage  = " + Names(t.StorageTemperatures));
+            }
+
+            static string Fmt(double? v) =>
+                v?.ToString("F1", CultureInfo.InvariantCulture) ?? "null";
+
+            static string Names(IReadOnlyList<SensorReading> readings) =>
+                readings.Count == 0
+                    ? "(なし)"
+                    : string.Join(", ", readings.Select(r =>
+                        string.Create(CultureInfo.InvariantCulture, $"{r.Name}={r.Value:F1}")));
+        };
 
         _hub.Start();
 
@@ -117,6 +184,20 @@ public partial class App : Application
         }
 
         base.OnExit(e);
+    }
+
+    /// <summary>現在のプロセスが管理者権限で動いているか。</summary>
+    private static bool IsElevated()
+    {
+        try
+        {
+            using var identity = WindowsIdentity.GetCurrent();
+            return new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator);
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private void OnDispatcherUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)

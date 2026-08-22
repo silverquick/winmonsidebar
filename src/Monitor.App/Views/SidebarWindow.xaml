@@ -395,55 +395,46 @@
                             <controls:StatRow Label="VRM" Value="{Binding ThermalVrmText}" />
                         </UniformGrid>
 
-                        <StackPanel Margin="0,0,0,4">
-                            <TextBlock Text="コア温度" Style="{StaticResource TinyLabelStyle}" Margin="0,0,0,2" />
+                        <!-- コア温度・その他温度・ファンはいずれも件数が読めないリストなので、
+                             2 列に流し込んで行数を半分にする（実機では コア1 / その他4 / ファン6 で、
+                             1 列だと 11 行、2 列なら 6 行）。 -->
+                        <StackPanel Margin="0,0,0,3">
+                            <TextBlock Text="コア温度" Style="{StaticResource TinyLabelStyle}" Margin="0,0,0,1" />
                             <ItemsControl ItemsSource="{Binding ThermalCoreTemperatures}">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate><UniformGrid Columns="2" /></ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
                                 <ItemsControl.ItemTemplate>
                                     <DataTemplate>
-                                        <Grid Margin="0,1" MinHeight="14">
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="Auto" />
-                                            </Grid.ColumnDefinitions>
-                                            <TextBlock Grid.Column="0" Text="{Binding Name}" Style="{StaticResource ProcessNameStyle}" />
-                                            <TextBlock Grid.Column="1" Text="{Binding ValueText}" Style="{StaticResource ProcessValueStyle}" />
-                                        </Grid>
+                                        <controls:StatRow Label="{Binding Name}" Value="{Binding ValueText}" Margin="0,0,6,0" />
                                     </DataTemplate>
                                 </ItemsControl.ItemTemplate>
                             </ItemsControl>
                         </StackPanel>
 
-                        <StackPanel Margin="0,0,0,4">
-                            <TextBlock Text="その他温度" Style="{StaticResource TinyLabelStyle}" Margin="0,0,0,2" />
+                        <StackPanel Margin="0,0,0,3">
+                            <TextBlock Text="その他温度" Style="{StaticResource TinyLabelStyle}" Margin="0,0,0,1" />
                             <ItemsControl ItemsSource="{Binding ThermalOtherTemperatures}">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate><UniformGrid Columns="2" /></ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
                                 <ItemsControl.ItemTemplate>
                                     <DataTemplate>
-                                        <Grid Margin="0,1" MinHeight="14">
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="Auto" />
-                                            </Grid.ColumnDefinitions>
-                                            <TextBlock Grid.Column="0" Text="{Binding Name}" Style="{StaticResource ProcessNameStyle}" />
-                                            <TextBlock Grid.Column="1" Text="{Binding ValueText}" Style="{StaticResource ProcessValueStyle}" />
-                                        </Grid>
+                                        <controls:StatRow Label="{Binding Name}" Value="{Binding ValueText}" Margin="0,0,6,0" />
                                     </DataTemplate>
                                 </ItemsControl.ItemTemplate>
                             </ItemsControl>
                         </StackPanel>
 
                         <StackPanel>
-                            <TextBlock Text="ファン" Style="{StaticResource TinyLabelStyle}" Margin="0,0,0,2" />
+                            <TextBlock Text="ファン" Style="{StaticResource TinyLabelStyle}" Margin="0,0,0,1" />
                             <ItemsControl ItemsSource="{Binding ThermalFans}">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate><UniformGrid Columns="2" /></ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
                                 <ItemsControl.ItemTemplate>
                                     <DataTemplate>
-                                        <Grid Margin="0,1" MinHeight="14">
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="Auto" />
-                                            </Grid.ColumnDefinitions>
-                                            <TextBlock Grid.Column="0" Text="{Binding Name}" Style="{StaticResource ProcessNameStyle}" />
-                                            <TextBlock Grid.Column="1" Text="{Binding ValueText}" Style="{StaticResource ProcessValueStyle}" />
-                                        </Grid>
+                                        <controls:StatRow Label="{Binding Name}" Value="{Binding ValueText}" Margin="0,0,6,0" />
                                     </DataTemplate>
                                 </ItemsControl.ItemTemplate>
                             </ItemsControl>
