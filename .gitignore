@@ -38,3 +38,6 @@ TestResults/
 ## Misc
 *.DotSettings.user
 .dotnet/
+
+## Claude Code の作業ディレクトリ（エージェント用の git worktree などが入る）
+.claude/
