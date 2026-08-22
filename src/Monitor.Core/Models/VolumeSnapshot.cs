@@ -21,7 +21,7 @@ public sealed record VolumeSnapshot
     public string? Label { get; init; }                 // "System"
     public string? FileSystem { get; init; }             // "NTFS"
     public VolumeKind Kind { get; init; }
-    public string? NetworkPath { get; init; }            // Network のとき "\\yuzu.local\00000000"
+    public string? NetworkPath { get; init; }            // Network のとき "\\server\share"
     public ulong TotalBytes { get; init; }
     public ulong FreeBytes { get; init; }
     public ulong UsedBytes { get; init; }
