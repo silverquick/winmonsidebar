@@ -1,5 +1,6 @@
 using System.Windows;
 using System.Windows.Interop;
+using System.Windows.Threading;
 using Monitor.Windows.Native;
 
 namespace Monitor.App.Shell;
@@ -22,10 +23,17 @@ public sealed class AppBarHost : IDisposable
 
     private readonly Window _window;
 
+    /// <summary>
+    /// フルスクリーンアプリの監視間隔。ABN_FULLSCREENAPP の通知だけに頼れないため自分でも見る。
+    /// </summary>
+    private static readonly TimeSpan FullscreenPollInterval = TimeSpan.FromSeconds(1);
+
     private IntPtr _hwnd;
     private uint _callbackMessage;
     private HwndSource? _source;
     private HwndSourceHook? _hook;
+    private DispatcherTimer? _fullscreenTimer;
+    private bool _suppressedForFullscreen;
     private bool _disposed;
 
     public AppBarHost(Window window)
@@ -82,6 +90,13 @@ public sealed class AppBarHost : IDisposable
         _source = HwndSource.FromHwnd(_hwnd);
         _hook = WndProc;
         _source?.AddHook(_hook);
+
+        // シェルからの ABN_FULLSCREENAPP は Windows 10/11 では取りこぼしがあり、
+        // 特にブラウザのフルスクリーン（YouTube 等）では飛んでこないことがある。
+        // 通知だけに頼ると最前面のまま動画に被さるので、定期的に自分でも確認する。
+        _fullscreenTimer = new DispatcherTimer { Interval = FullscreenPollInterval };
+        _fullscreenTimer.Tick += (_, _) => UpdateFullscreenSuppression();
+        _fullscreenTimer.Start();
 
         UpdatePosition();
     }
@@ -160,6 +175,87 @@ public sealed class AppBarHost : IDisposable
         Shell32.SHAppBarMessage(Shell32.ABM_WINDOWPOSCHANGED, ref abd);
     }
 
+    /// <summary>
+    /// 同じモニタでフルスクリーンのアプリが前面にあるあいだだけ、最前面表示を降ろす。
+    /// 状態が変わったときだけ <see cref="User32.SetWindowPos"/> を呼ぶ。
+    /// </summary>
+    private void UpdateFullscreenSuppression()
+    {
+        if (!IsRegistered || _hwnd == IntPtr.Zero)
+        {
+            return;
+        }
+
+        bool fullscreen = IsFullscreenAppInForeground();
+        if (fullscreen == _suppressedForFullscreen)
+        {
+            return;
+        }
+
+        _suppressedForFullscreen = fullscreen;
+
+        if (fullscreen)
+        {
+            User32.SetWindowPos(_hwnd, User32.HWND_BOTTOM, 0, 0, 0, 0,
+                User32.SWP_NOMOVE | User32.SWP_NOSIZE | User32.SWP_NOACTIVATE);
+        }
+        else if (_window.Topmost)
+        {
+            // 利用者が右クリックメニューで最前面表示を切っている場合は勝手に戻さない。
+            User32.SetWindowPos(_hwnd, User32.HWND_TOPMOST, 0, 0, 0, 0,
+                User32.SWP_NOMOVE | User32.SWP_NOSIZE | User32.SWP_NOACTIVATE);
+        }
+    }
+
+    /// <summary>
+    /// 前面ウィンドウが、このサイドバーと同じモニタを丸ごと覆っているか。
+    /// フルスクリーンのウィンドウは作業領域ではなくモニタ全体を占めるので、
+    /// AppBar で領域を確保していてもモニタ矩形との比較で判定できる。
+    /// </summary>
+    private bool IsFullscreenAppInForeground()
+    {
+        IntPtr foreground = User32.GetForegroundWindow();
+        if (foreground == IntPtr.Zero || foreground == _hwnd)
+        {
+            return false;
+        }
+
+        // デスクトップ本体は常に画面全体を覆っているので除外する。
+        if (foreground == User32.GetShellWindow())
+        {
+            return false;
+        }
+
+        string className = User32.GetWindowClassName(foreground);
+        if (className is "Progman" or "WorkerW" or "Shell_TrayWnd" or "Shell_SecondaryTrayWnd")
+        {
+            return false;
+        }
+
+        if (!User32.IsWindowVisible(foreground) || !User32.GetWindowRect(foreground, out RECT rect))
+        {
+            return false;
+        }
+
+        IntPtr monitor = User32.MonitorFromWindow(_hwnd, User32.MONITOR_DEFAULTTONEAREST);
+        if (User32.MonitorFromWindow(foreground, User32.MONITOR_DEFAULTTONEAREST) != monitor)
+        {
+            return false;
+        }
+
+        MONITORINFO info = MONITORINFO.Create();
+        if (!User32.GetMonitorInfoW(monitor, ref info))
+        {
+            return false;
+        }
+
+        RECT mon = info.rcMonitor;
+        return rect.Left <= mon.Left
+            && rect.Top <= mon.Top
+            && rect.Right >= mon.Right
+            && rect.Bottom >= mon.Bottom;
+    }
+
     private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
         if (_callbackMessage != 0 && (uint)msg == _callbackMessage)
@@ -173,18 +269,10 @@ public sealed class AppBarHost : IDisposable
                     UpdatePosition();
                     break;
                 case Shell32.ABN_FULLSCREENAPP:
-                    if (lParam != IntPtr.Zero)
-                    {
-                        // A fullscreen app appeared: drop behind everything so it isn't obscured by us.
-                        User32.SetWindowPos(_hwnd, User32.HWND_BOTTOM, 0, 0, 0, 0,
-                            User32.SWP_NOMOVE | User32.SWP_NOSIZE | User32.SWP_NOACTIVATE);
-                    }
-                    else
-                    {
-                        // The fullscreen app is gone: reclaim our topmost position.
-                        User32.SetWindowPos(_hwnd, User32.HWND_TOPMOST, 0, 0, 0, 0,
-                            User32.SWP_NOMOVE | User32.SWP_NOSIZE | User32.SWP_NOACTIVATE);
-                    }
+                    // lParam は「フルスクリーンアプリが出た/消えた」を示すが、これを信じて
+                    // 状態を切り替えるより、実際の前面ウィンドウを見て判定したほうが確実。
+                    // タイマー側と同じ経路に集約して、両者の判断が食い違わないようにする。
+                    UpdateFullscreenSuppression();
                     break;
             }
 
@@ -219,6 +307,14 @@ public sealed class AppBarHost : IDisposable
     /// </summary>
     public void Unregister()
     {
+        if (_fullscreenTimer is not null)
+        {
+            _fullscreenTimer.Stop();
+            _fullscreenTimer = null;
+        }
+
+        _suppressedForFullscreen = false;
+
         if (_hook is not null)
         {
             _source?.RemoveHook(_hook);
