@@ -34,6 +34,7 @@
 | ランタイム | .NET 10 |
 | アーキテクチャ | x64 のみ（`Directory.Build.props` で固定） |
 | GPU 詳細 | NVIDIA GPU のとき有効（NVAPI / NVML）。他ベンダーでは DXGI + PDH の範囲まで |
+| CPU・マザボ温度 | 任意。[PawnIO](https://github.com/namazso/PawnIO.Setup) のインストールと管理者起動が必要 |
 | ビルド | .NET 10 SDK（10.0.400 で確認） |
 
 Visual Studio も Windows SDK も不要。`dotnet` CLI だけでビルドできる。
@@ -91,9 +92,13 @@ dotnet publish src\Monitor.App -c Release -r win-x64 --self-contained -p:Publish
 | GPU ファン % / RPM | NVAPI | 不要 | 取得可 |
 | GPU 消費電力 / 電力上限 | NVML（`nvml.dll`） | 不要 | 取得可 |
 | ディスク温度 | `IOCTL_STORAGE_QUERY_PROPERTY`（`StorageDeviceTemperatureProperty` = 52） | 不要 | ドライブ依存 |
-| **CPU 温度（Tctl/Tdie）** | LibreHardwareMonitorLib（カーネルドライバ） | **必要** | 管理者起動時のみ |
+| **CPU 温度（Tctl/Tdie）** | LibreHardwareMonitorLib + **PawnIO** | **必要** | 管理者起動時のみ |
+| **CPU パッケージ電力** | 同上 | **必要** | 管理者起動時のみ |
 | **マザーボード / VRM 温度** | 同上（Super I/O） | **必要** | 管理者起動時のみ |
 | **ファン RPM（ケース・CPU）** | 同上 | **必要** | 管理者起動時のみ |
+
+管理者で起動した場合、ディスク温度も IOCTL より広く取れる（開発機では 4/7 台 → 6/7 台）。
+IOCTL で取れなかったドライブは LibreHardwareMonitor 側の値をフォールバックとして使う。
 
 ### なぜ CPU 温度だけ特別扱いなのか
 
@@ -105,9 +110,29 @@ CPU 温度には統一された Windows API が存在しない。
 - AMD Ryzen の Tctl/Tdie は **SMN レジスタを PCI コンフィグ空間経由で読む**必要があり、
   これはカーネルモードでしか行えない
 
-HWiNFO や LibreHardwareMonitor が自前の署名済みカーネルドライバを同梱しているのはこのため。
+HWiNFO や LibreHardwareMonitor がカーネルドライバを必要とするのはこのため。
 本プロジェクトもこの一点だけ `LibreHardwareMonitorLib` に委ね、**管理者権限で起動されたときだけ**
 有効化する。
+
+### PawnIO のインストールが必要
+
+`LibreHardwareMonitorLib` 0.9.6 は**ドライバを同梱していない**。かつて使われていた `WinRing0` は
+MSR や PCI コンフィグ空間への生アクセスをそのまま呼び出し側に開放する設計で、Microsoft の
+脆弱ドライバブロックリストに掲載された。その後継として、サンドボックス化された Pawn バイトコードの
+モジュールだけを実行する **PawnIO** という別配布の署名済みドライバに移行している。
+DLL に埋め込まれているのはドライバ本体ではなくモジュール（`PawnIo.AMDFamily17.bin`、
+`PawnIo.RyzenSMU.bin`、`PawnIo.LpcIO.bin`、`PawnIo.SmbusNCT6793.bin` など）である。
+
+つまり **PawnIO を入れないと、管理者で起動しても CPU・マザーボードの温度は取れない。**
+このとき LibreHardwareMonitor は例外を投げず `0.00` を返すため、気付きにくい
+（本プロジェクトはこの値を「取得不能」として弾いている。後述）。
+
+```powershell
+winget install namazso.PawnIO
+```
+
+インストールすると `PawnIO` という名前のカーネルドライバサービスが登録される。
+アンインストールは `winget uninstall namazso.PawnIO`。
 
 非管理者で起動した場合、「温度・ファン」セクションには説明と「管理者で再起動」ボタンが出るだけで、
 **それ以外の機能はすべて通常どおり動く**。
@@ -129,7 +154,13 @@ HWiNFO や LibreHardwareMonitor が自前の署名済みカーネルドライバ
 ```powershell
 Get-CimInstance -Namespace root\Microsoft\Windows\DeviceGuard -ClassName Win32_DeviceGuard |
   Select-Object SecurityServicesRunning   # 2 が含まれていれば HVCI 稼働中
+
+Get-CimInstance Win32_SystemDriver | Where-Object Name -eq 'PawnIO'   # Running なら準備完了
 ```
+
+開発機（HVCI 無効・脆弱ドライバブロックリスト有効）では PawnIO は問題なくロードでき、
+CPU パッケージ 72.9°C / CPU 電力 72.5W / CCD1 (Tdie) 70.8°C / マザーボード 48.5°C /
+ファン 6 基の取得を確認している。
 
 ## アーキテクチャ
 
@@ -229,9 +260,19 @@ winmonsidebar/
     "thermal": false, "process": true
   },
   "ShowAllDisks": true,
-  "TopProcessCount": 8
+  "TopProcessCount": 8,
+  "SensorAliases": {
+    "Temperature #3": "VRM",
+    "Fan #1": "CPU ファン",
+    "Fan #2": "ケース前面"
+  }
 }
 ```
+
+`SensorAliases` は Super I/O の総称的なセンサー名を読める名前に差し替える。生の名前は起動時に
+`app.log` へ `thermal: others = ...` / `thermal: fans = ...` として記録されるので、そこから拾う。
+別名は表示だけでなく分類にも効き、`"VRM"` を含む名前を与えるとその値は「その他温度」ではなく
+VRM の欄に入る。
 
 サイドバーを右クリックすると「最前面表示」「管理者で再起動」「幅をリセット」「終了」が出る。
 
@@ -256,6 +297,18 @@ winmonsidebar/
 二重登録を防ぐため、名前付き Mutex `Global\WinMonSidebar_SingleInstance` で単一インスタンス化
 している（AppBar が 2 つ登録されると作業領域が二重に削られる）。
 
+### 管理者への昇格は単一インスタンス判定と競合する
+
+「管理者で再起動」は `Process.Start(Verb = "runas")` で自分を起動し直し、元のインスタンスを
+`Shutdown()` する。`Process.Start` は**プロセス生成の時点で戻る**一方、昇格した新プロセスが
+.NET/WPF の起動を終えて単一インスタンス用ミューテックスに到達するまでには 1 秒近くかかる。
+素直に「取れなければ即終了」と書くと、新旧どちらが先に到達するかがタイミング任せになり、
+新プロセスが先だと「既に起動中」と誤判定して即終了 → 続いて旧プロセスも終了する。
+症状は「UAC を承認したのにアプリが消える」または「昇格しないまま残る」。
+
+そのため起動時は即諦めず、ミューテックスを最大 5 秒待ってから判断する。真の多重起動では
+その待ち時間のあとに終了するだけ。
+
 ### 座標は物理ピクセルで扱う
 
 AppBar API が扱う矩形は物理ピクセル、WPF の `Window.Left/Top/Width/Height` は DIP。
@@ -273,6 +326,12 @@ AppBar API が扱う矩形は物理ピクセル、WPF の `Window.Left/Top/Width
 `0°C` と「温度が取れない」を混同させないため、取得不能な値はすべて `double?` / `int?` の
 `null` で表し、UI では `—` と表示する。
 
+これは飾りではない。LibreHardwareMonitor は必要なカーネルモジュールが使えないとき、
+例外を投げずに `0.00` を返す。PawnIO を入れる前の CPU パッケージ温度がまさにそれで、
+未接続の Super I/O 入力や一部の古い SATA SSD も同じ値を返す。素通しすると画面に
+「0.0°C」と表示され、正常値と区別が付かなくなる。そのためプロバイダ層で
+0 以下と 150°C 超を取得不能として捨てている。
+
 ### PDH のカウンター名は英語で指定する
 
 日本語 Windows でもカウンターを引けるよう、`PdhAddEnglishCounter` を使っている。
@@ -285,11 +344,18 @@ AppBar API が扱う矩形は物理ピクセル、WPF の `Window.Left/Top/Width
 
 ## 既知の制限
 
-- **CPU 温度・マザーボード温度・ファン RPM は未検証**。実装済みだが、管理者権限での動作確認が
-  まだ取れていない。カーネルドライバのロードが Windows の設定に左右されるため。
-- ディスク温度は `IOCTL_STORAGE_QUERY_PROPERTY` に対応するドライブでしか取れない。古い SATA
-  ドライブは `ERROR_INVALID_FUNCTION` を返す（開発機では 7 台中 4 台で取得可）。ATA SMART
-  passthrough なら取れるが管理者権限が要る。
+- **CPU 温度・マザーボード温度・ファン RPM には PawnIO のインストールと管理者起動の両方が要る。**
+  どちらか欠けるとその欄は `—` になる。
+- **Super I/O のセンサー名が総称的で、どれが VRM か特定できない。** 開発機の
+  ASUS TUF GAMING B550-PLUS では `Temperature #2/#3/#4/#6` としか返ってこず、部位は
+  ボードごとに違う。推測でラベルを付けると根拠なく断定することになるため、既定では
+  そのまま「その他温度」に並べている。BIOS や他ツールと突き合わせて特定できたら
+  `settings.json` の `SensorAliases` で名前を与えられる（"VRM" を含む名前にすれば
+  VRM の欄に入る）。ファン名（`Fan #1`〜）も同様。
+- ディスク温度は非管理者だと `IOCTL_STORAGE_QUERY_PROPERTY` に対応するドライブでしか取れない。
+  古い SATA ドライブは `ERROR_INVALID_FUNCTION` を返す（開発機では 7 台中 4 台）。
+  管理者起動なら LibreHardwareMonitor 側の SMART 経由でフォールバックし 6 台まで増えるが、
+  それでも応答しない個体はある（開発機の INTEL SSDSC2CT120A3 は `0.0` を返すため取得不能扱い）。
 - GPU の詳細（温度・ファン・電力）は NVIDIA のみ。AMD / Intel は未対応（`IGpuVendorSensors`
   を実装すれば差し込める設計にはなっている）。
 - ネットワークインターフェースの列挙数が `Get-NetAdapter` より多い。IP Helper は Hyper-V の

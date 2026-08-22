@@ -12,8 +12,21 @@ namespace Monitor.Optional.Lhm;
 /// </summary>
 public sealed class LhmThermalProvider : IThermalProvider
 {
+    private readonly IReadOnlyDictionary<string, string> _sensorAliases;
+
     private Computer? _computer;
     private bool _isElevated;
+
+    /// <param name="sensorAliases">
+    /// センサーの生の名前 → 表示したい名前の対応。Super I/O が返す "Temperature #3" のような
+    /// 総称名はボードごとに意味が違い、ソフトウェアからは部位を判別できないため、
+    /// 利用者が特定した名前を外から与えられるようにする。別名は分類にも使われるので、
+    /// "VRM" を含む名前を与えればその値は VRM として扱われる。
+    /// </param>
+    public LhmThermalProvider(IReadOnlyDictionary<string, string>? sensorAliases = null)
+    {
+        _sensorAliases = sensorAliases ?? new Dictionary<string, string>();
+    }
 
     public string Name => "LibreHardwareMonitor";
 
@@ -189,7 +202,7 @@ public sealed class LhmThermalProvider : IThermalProvider
         return false;
     }
 
-    private static void CollectFromHardware(
+    private void CollectFromHardware(
         IHardware hw,
         ref double? cpuPackageTemp,
         ref double? cpuPackagePower,
@@ -244,7 +257,7 @@ public sealed class LhmThermalProvider : IThermalProvider
         }
     }
 
-    private static void ClassifySensor(
+    private void ClassifySensor(
         IHardware hw,
         ISensor sensor,
         ref double? cpuPackageTemp,
@@ -262,8 +275,14 @@ public sealed class LhmThermalProvider : IThermalProvider
         }
 
         double value = sensor.Value.Value;
-        string name = sensor.Name ?? "";
         HardwareType hwType = hw.HardwareType;
+
+        // 別名は分類より前に適用する。こうすると利用者が "Temperature #3" に "VRM" を割り当てた
+        // だけで、以降の名前判定がそれを VRM として拾い、表示名も置き換わる。
+        string rawName = sensor.Name ?? "";
+        string name = _sensorAliases.TryGetValue(rawName, out string? alias) && !string.IsNullOrWhiteSpace(alias)
+            ? alias
+            : rawName;
 
         // ---- Fan（RPM）。ハードウェア種別を問わず拾う。未接続（0 RPM）は除外。 ----
         if (sensor.SensorType == SensorType.Fan)
