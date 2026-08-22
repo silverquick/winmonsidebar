@@ -41,6 +41,12 @@ public sealed class CoreGrid : FrameworkElement
         typeof(CoreGrid),
         new FrameworkPropertyMetadata(2.0, FrameworkPropertyMetadataOptions.AffectsRender));
 
+    public static readonly DependencyProperty MinCellWidthProperty = DependencyProperty.Register(
+        nameof(MinCellWidth),
+        typeof(double),
+        typeof(CoreGrid),
+        new FrameworkPropertyMetadata(6.0, FrameworkPropertyMetadataOptions.AffectsRender));
+
     public IReadOnlyList<double> Values
     {
         get => (IReadOnlyList<double>)GetValue(ValuesProperty);
@@ -71,6 +77,15 @@ public sealed class CoreGrid : FrameworkElement
         set => SetValue(CellGapProperty, value);
     }
 
+    /// <summary>
+    /// 1 セルの最小幅。自動列数はこれを下回らない範囲で、できるだけ 1 行に収めようとする。
+    /// </summary>
+    public double MinCellWidth
+    {
+        get => (double)GetValue(MinCellWidthProperty);
+        set => SetValue(MinCellWidthProperty, value);
+    }
+
     protected override void OnRender(DrawingContext dc)
     {
         double width = RenderSize.Width;
@@ -88,7 +103,7 @@ public sealed class CoreGrid : FrameworkElement
         }
 
         double gap = Math.Max(0, CellGap);
-        int columns = ResolveColumns(count, width, height);
+        int columns = ResolveColumns(count, width, height, gap);
         int rows = (int)Math.Ceiling(count / (double)columns);
 
         double cellWidth = (width - gap * (columns - 1)) / columns;
@@ -130,7 +145,7 @@ public sealed class CoreGrid : FrameworkElement
         }
     }
 
-    private int ResolveColumns(int count, double width, double height)
+    private int ResolveColumns(int count, double width, double height, double gap)
     {
         int columns = Columns;
         if (columns > 0)
@@ -138,10 +153,41 @@ public sealed class CoreGrid : FrameworkElement
             return Math.Min(columns, count);
         }
 
+        double minCellWidth = Math.Max(1.0, MinCellWidth);
+
+        // まず横一列に収まるかを試す。論理コアの一覧は横一列が最も読みやすく、
+        // 「12 個中 11 個までが 1 行目、12 個目だけ 2 行目」のような半端な折り返しを避けたい。
+        // 以前はセルが正方形に近くなる列数（sqrt(count * 幅/高さ)）だけを見ていたため、
+        // 幅 316 / 高さ 30 / 12 コアで 11 列となり、まさにその折り返しが起きていた。
+        if ((width - gap * (count - 1)) / count >= minCellWidth)
+        {
+            return count;
+        }
+
+        // 1 行に入らない場合は正方形に近い列数を起点にしつつ、最終行が極端に空く配置を避ける。
         double aspect = width / Math.Max(height, 1.0);
-        int auto = (int)Math.Round(Math.Sqrt(count * aspect));
-        auto = Math.Max(1, Math.Min(auto, count));
-        return auto;
+        int ideal = Math.Clamp((int)Math.Round(Math.Sqrt(count * aspect)), 1, count);
+
+        int best = ideal;
+        int bestWaste = int.MaxValue;
+        for (int c = Math.Max(1, ideal - 3); c <= Math.Min(count, ideal + 3); c++)
+        {
+            if ((width - gap * (c - 1)) / c < minCellWidth)
+            {
+                continue;
+            }
+
+            int rows = (int)Math.Ceiling(count / (double)c);
+            int waste = (c * rows) - count;
+            if (waste < bestWaste ||
+                (waste == bestWaste && Math.Abs(c - ideal) < Math.Abs(best - ideal)))
+            {
+                best = c;
+                bestWaste = waste;
+            }
+        }
+
+        return best;
     }
 
     private static Color GetColor(Brush brush)
