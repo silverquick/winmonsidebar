@@ -553,12 +553,12 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
     }
 
     /// <summary>
-    /// 「ストレージ」セクション（物理ディスク + 論理ボリューム統合）を組み立てる。
-    /// 論理ボリュームを主軸にドライブレター昇順で並べ、<see cref="VolumeSnapshot.PhysicalDriveNumber"/> から
-    /// 対応する物理ディスクの R/W・温度を引く。同じ物理ディスクに複数のボリュームがある場合は、
-    /// ドライブレターが最も若い（=先頭に並ぶ）ボリュームの行にだけ R/W・温度を載せ、以降の行は空欄にする
-    /// （例: 実機で J: と P: がともに PhysicalDrive 0 に解決される場合、J: にだけ値を出す）。
-    /// どのボリュームにも紐づかない物理ディスクがあれば、末尾に "#{番号}" キーの行を追加する。
+    /// 「ストレージ」セクション（物理ディスク見出し行 + 配下ボリューム行）を組み立てる。
+    /// 物理ディスク番号の昇順に「ディスク見出し行（キー "#3"）」→「そのディスクへ紐づくボリューム行
+    /// （キーはドライブレター、ドライブレター昇順）」を並べる。物理ディスクへ解決できないローカルボリューム
+    /// はグループ群の後ろに見出し無しで、ネットワークドライブは最後にまとめて続ける。
+    /// "#" 始まりの見出しキーとドライブレター（英字+":"）のボリュームキーは形が異なるため衝突しない。
+    /// R/W・温度は物理ディスク見出し行に集約したので、複数ボリュームへの重複表示回避ロジックは不要になった。
     /// </summary>
     private void ApplyStorage(DiskSnapshot disk, IReadOnlyList<VolumeSnapshot> volumes, ThermalSnapshot thermal)
     {
@@ -577,122 +577,134 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
             devicesByNumber[d.PhysicalDriveNumber] = d;
         }
 
-        VolumeSnapshot[] sortedVolumes = volumes.ToArray();
-        Array.Sort(sortedVolumes, (a, b) => string.CompareOrdinal(a.DriveLetter, b.DriveLetter));
-
-        // 物理ディスク番号 → その番号を最初に参照するボリュームのドライブレター（＝R/W・温度を表示する行）。
-        var firstVolumeForDisk = new Dictionary<int, string>();
-        foreach (VolumeSnapshot v in sortedVolumes)
-        {
-            if (v.PhysicalDriveNumber is int pd0 && !firstVolumeForDisk.ContainsKey(pd0))
-            {
-                firstVolumeForDisk[pd0] = v.DriveLetter;
-            }
-        }
-
-        var usedDiskNumbers = new HashSet<int>();
-        var desiredKeys = new List<string>(sortedVolumes.Length + disk.Devices.Count);
-        var applyActions = new Dictionary<string, Action<StorageRowViewModel>>(sortedVolumes.Length + disk.Devices.Count);
+        // 物理ディスク番号 → 配下ボリューム（ドライブレター昇順）。解決できないローカルボリュームと
+        // ネットワークドライブは別リストへ振り分け、グループ群の後ろにまとめて続ける。
+        var volumesByDisk = new Dictionary<int, List<VolumeSnapshot>>();
+        var unresolvedVolumes = new List<VolumeSnapshot>();
+        var networkVolumes = new List<VolumeSnapshot>();
 
         ulong totalCapacityBytes = 0;
         ulong usedCapacityBytes = 0;
 
-        foreach (VolumeSnapshot v in sortedVolumes)
+        foreach (VolumeSnapshot v in volumes)
         {
-            string key = v.DriveLetter;
-            desiredKeys.Add(key);
-
-            DiskDeviceSnapshot? device = null;
-            if (v.PhysicalDriveNumber is int pd && devicesByNumber.TryGetValue(pd, out DiskDeviceSnapshot dd))
-            {
-                device = dd;
-                usedDiskNumbers.Add(pd);
-            }
-
+            // 全体使用率（overallPercent）にはこの PC のローカルディスク容量だけを積算する。
+            // ネットワークドライブは NAS 側の全容量を持ち込んでしまい、ローカルの使用状況とは
+            // 無関係に率を歪めるため除外する（旧実装からの既存挙動を維持）。
             if (v.Kind != VolumeKind.Network && v.IsReady && v.TotalBytes > 0)
             {
                 totalCapacityBytes += v.TotalBytes;
                 usedCapacityBytes += v.UsedBytes;
             }
 
-            string driveLetterText = v.DriveLetter;
-            string labelText = v.Kind == VolumeKind.Network
-                ? (v.NetworkPath ?? "")
-                : (string.IsNullOrWhiteSpace(v.Label) ? "" : v.Label!);
-            bool isNetwork = v.Kind == VolumeKind.Network;
-            bool isReady = v.IsReady;
-            bool hasCapacity = v.IsReady && v.TotalBytes > 0;
-            string usagePercentText = v.IsReady ? ByteFormatter.Percent(v.UsedPercent) : "—";
-            double usedPercent = v.UsedPercent;
-            string freeText = v.IsReady ? ByteFormatter.Bytes(v.FreeBytes) : "—";
-
-            string readText;
-            string writeText;
-            string temperatureText;
-            if (device is null)
+            if (v.Kind == VolumeKind.Network)
             {
-                // ネットワークドライブ、またはローカルでも物理ディスクへ解決できないボリューム。
-                readText = "—";
-                writeText = "—";
-                temperatureText = "—";
+                networkVolumes.Add(v);
             }
-            else if (firstVolumeForDisk.TryGetValue(device.PhysicalDriveNumber, out string? firstLetter) && firstLetter == key)
+            else if (v.PhysicalDriveNumber is int pd && devicesByNumber.ContainsKey(pd))
             {
-                readText = ShortRate(device.ReadBytesPerSec);
-                writeText = ShortRate(device.WriteBytesPerSec);
-                double? temperature = device.TemperatureC ?? FindStorageTemperature(thermal.StorageTemperatures, device.Model);
-                temperatureText = ByteFormatter.Temperature(temperature);
+                if (!volumesByDisk.TryGetValue(pd, out List<VolumeSnapshot>? list))
+                {
+                    list = new List<VolumeSnapshot>();
+                    volumesByDisk[pd] = list;
+                }
+
+                list.Add(v);
             }
             else
             {
-                // 同じ物理ディスクを参照する2行目以降は重複表示を避けて空欄にする。
-                readText = "";
-                writeText = "";
-                temperatureText = "";
+                unresolvedVolumes.Add(v);
             }
-
-            string tooltipText = BuildStorageTooltip(device);
-
-            applyActions[key] = row => row.Update(
-                driveLetterText, labelText, isNetwork, isReady, hasCapacity, usedPercent,
-                usagePercentText, freeText, readText, writeText, temperatureText, tooltipText);
         }
 
-        DiskDeviceSnapshot[] orphanDevices = disk.Devices
-            .Where(d => !usedDiskNumbers.Contains(d.PhysicalDriveNumber))
-            .OrderBy(d => d.PhysicalDriveNumber)
-            .ToArray();
-
-        foreach (DiskDeviceSnapshot d in orphanDevices)
+        foreach (List<VolumeSnapshot> list in volumesByDisk.Values)
         {
-            string key = "#" + d.PhysicalDriveNumber.ToString(CultureInfo.InvariantCulture);
-            desiredKeys.Add(key);
+            list.Sort((a, b) => string.CompareOrdinal(a.DriveLetter, b.DriveLetter));
+        }
 
-            string driveLetterText = string.IsNullOrEmpty(d.DisplayName) ? $"Disk {d.PhysicalDriveNumber}" : d.DisplayName;
-            string labelText = string.IsNullOrWhiteSpace(d.Model) ? "不明なドライブ" : d.Model;
-            string readText = ShortRate(d.ReadBytesPerSec);
-            string writeText = ShortRate(d.WriteBytesPerSec);
-            double? temperature = d.TemperatureC ?? FindStorageTemperature(thermal.StorageTemperatures, d.Model);
-            string temperatureText = ByteFormatter.Temperature(temperature);
-            string tooltipText = BuildStorageTooltip(d);
+        unresolvedVolumes.Sort((a, b) => string.CompareOrdinal(a.DriveLetter, b.DriveLetter));
+        networkVolumes.Sort((a, b) => string.CompareOrdinal(a.DriveLetter, b.DriveLetter));
 
-            applyActions[key] = row => row.Update(
-                driveLetterText, labelText, false, true, false, 0.0,
-                "—", "—", readText, writeText, temperatureText, tooltipText);
+        DiskDeviceSnapshot[] sortedDevices = disk.Devices.OrderBy(d => d.PhysicalDriveNumber).ToArray();
+
+        var desiredKeys = new List<string>(volumes.Count + disk.Devices.Count);
+        var applyActions = new Dictionary<string, Action<StorageRowViewModel>>(volumes.Count + disk.Devices.Count);
+
+        foreach (DiskDeviceSnapshot d in sortedDevices)
+        {
+            string diskKey = "#" + d.PhysicalDriveNumber.ToString(CultureInfo.InvariantCulture);
+            desiredKeys.Add(diskKey);
+            applyActions[diskKey] = BuildDiskRowAction(d, thermal);
+
+            if (volumesByDisk.TryGetValue(d.PhysicalDriveNumber, out List<VolumeSnapshot>? childVolumes))
+            {
+                foreach (VolumeSnapshot v in childVolumes)
+                {
+                    desiredKeys.Add(v.DriveLetter);
+                    applyActions[v.DriveLetter] = BuildVolumeRowAction(v, StorageRowKind.Volume);
+                }
+            }
+        }
+
+        foreach (VolumeSnapshot v in unresolvedVolumes)
+        {
+            desiredKeys.Add(v.DriveLetter);
+            applyActions[v.DriveLetter] = BuildVolumeRowAction(v, StorageRowKind.Volume);
+        }
+
+        foreach (VolumeSnapshot v in networkVolumes)
+        {
+            desiredKeys.Add(v.DriveLetter);
+            applyActions[v.DriveLetter] = BuildVolumeRowAction(v, StorageRowKind.Network);
         }
 
         UpdateStorageRows(desiredKeys, applyActions);
 
         double overallPercent = totalCapacityBytes > 0 ? 100.0 * usedCapacityBytes / totalCapacityBytes : 0.0;
-        _ = overallPercent; // 現状 StorageSummary には出さないが、将来の拡張用に計算だけは保持する。
 
         StorageSummary = string.Create(
             CultureInfo.InvariantCulture,
-            $"{sortedVolumes.Length} ドライブ · R {ShortRate(disk.TotalReadBytesPerSec)} W {ShortRate(disk.TotalWriteBytesPerSec)}");
+            $"{volumes.Count} ドライブ · {ByteFormatter.Percent(overallPercent)} · R {ShortRate(disk.TotalReadBytesPerSec)} W {ShortRate(disk.TotalWriteBytesPerSec)}");
+    }
+
+    /// <summary>物理ディスク見出し行1件分の更新アクションを組み立てる。</summary>
+    private static Action<StorageRowViewModel> BuildDiskRowAction(DiskDeviceSnapshot d, ThermalSnapshot thermal)
+    {
+        string modelText = string.IsNullOrWhiteSpace(d.Model) ? $"Disk {d.PhysicalDriveNumber}" : d.Model;
+        string busTypeText = string.IsNullOrEmpty(d.BusType) ? "" : d.BusType + (d.IsSsd ? " SSD" : " HDD");
+        string readText = ShortRate(d.ReadBytesPerSec);
+        string writeText = ShortRate(d.WriteBytesPerSec);
+        string busyPercentText = ByteFormatter.Percent(d.BusyPercent);
+        double? temperature = d.TemperatureC ?? FindStorageTemperature(thermal.StorageTemperatures, d.Model);
+        string temperatureText = ByteFormatter.Temperature(temperature);
+        string tooltipText = BuildDiskTooltip(d);
+        double writeBytesPerSec = d.WriteBytesPerSec;
+
+        return row => row.UpdateAsDisk(
+            modelText, busTypeText, readText, writeText, busyPercentText, temperatureText, writeBytesPerSec, tooltipText);
+    }
+
+    /// <summary>ボリューム行/ネットワーク行1件分の更新アクションを組み立てる。列構成は共通なので
+    /// <paramref name="kind"/>（Volume / Network）だけで振る舞いを切り替える。</summary>
+    private static Action<StorageRowViewModel> BuildVolumeRowAction(VolumeSnapshot v, StorageRowKind kind)
+    {
+        string driveLetterText = v.DriveLetter;
+        string labelText = kind == StorageRowKind.Network
+            ? (v.NetworkPath ?? "")
+            : (string.IsNullOrWhiteSpace(v.Label) ? "" : v.Label!);
+        bool isReady = v.IsReady;
+        bool hasCapacity = v.IsReady && v.TotalBytes > 0;
+        string usagePercentText = v.IsReady ? ByteFormatter.Percent(v.UsedPercent) : "—";
+        double usedPercent = v.UsedPercent;
+        string capacityText = hasCapacity ? ByteFormatter.BytesPair(v.UsedBytes, v.TotalBytes) : "—";
+        string tooltipText = BuildVolumeTooltip(v);
+
+        return row => row.UpdateAsVolume(
+            kind, driveLetterText, labelText, isReady, hasCapacity, usedPercent, usagePercentText, capacityText, tooltipText);
     }
 
     /// <summary>
-    /// 全ストレージ行（ボリューム + ボリューム無し物理ディスク）を <see cref="StorageRowViewModel.Key"/> で
+    /// 全ストレージ行（物理ディスク見出し行 + ボリューム/ネットワーク行）を <see cref="StorageRowViewModel.Key"/> で
     /// 照合しながら差分更新する。毎回 Clear→Add するとちらつくため、足りない/余る分だけ追加削除する
     /// （<see cref="UpdateProcesses"/> と同じ方針）。<paramref name="desiredKeys"/> の順序を維持する。
     /// </summary>
@@ -738,31 +750,50 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
         }
     }
 
-    private static string BuildStorageTooltip(DiskDeviceSnapshot? device)
+    /// <summary>物理ディスク見出し行のツールチップ。バス種別・Busy% は行本体に表示されるためここでは出さず、
+    /// 行に出ていない情報（物理ディスク番号・総容量）を出す。モデル名は行側が TextTrimming で省略され得るため、
+    /// 確認用にフルの値をここにも残す。</summary>
+    private static string BuildDiskTooltip(DiskDeviceSnapshot device)
     {
-        if (device is null)
-        {
-            return "";
-        }
-
         var parts = new List<string>(4);
         if (!string.IsNullOrWhiteSpace(device.Model))
         {
             parts.Add(device.Model);
         }
 
-        if (!string.IsNullOrEmpty(device.BusType))
-        {
-            parts.Add(device.BusType + (device.IsSsd ? " SSD" : " HDD"));
-        }
+        parts.Add(string.Create(CultureInfo.InvariantCulture, $"物理ディスク {device.PhysicalDriveNumber}"));
 
         if (device.CapacityBytes > 0)
         {
-            parts.Add(ByteFormatter.Bytes(device.CapacityBytes));
+            parts.Add(string.Create(CultureInfo.InvariantCulture, $"総容量 {ByteFormatter.Bytes(device.CapacityBytes)}"));
         }
 
-        parts.Add(string.Create(CultureInfo.InvariantCulture, $"物理ディスク {device.PhysicalDriveNumber}"));
+        // 行の Busy% 列には見出しラベルを置く幅が無い（付けるとモデル名列を削ることになる）ため、
+        // 何の百分率かはここで補う。
         parts.Add(string.Create(CultureInfo.InvariantCulture, $"Busy {ByteFormatter.Percent(device.BusyPercent)}"));
+
+        return string.Join(" · ", parts);
+    }
+
+    /// <summary>ボリューム行/ネットワーク行のツールチップ。ファイルシステムとボリューム総容量は行本体に
+    /// 出ないのでここに出す（<see cref="VolumeSnapshot.FileSystem"/> は従来どこからも参照されていなかった）。</summary>
+    private static string BuildVolumeTooltip(VolumeSnapshot v)
+    {
+        if (!v.IsReady)
+        {
+            return "";
+        }
+
+        var parts = new List<string>(2);
+        if (!string.IsNullOrWhiteSpace(v.FileSystem))
+        {
+            parts.Add(v.FileSystem!);
+        }
+
+        if (v.TotalBytes > 0)
+        {
+            parts.Add(string.Create(CultureInfo.InvariantCulture, $"総容量 {ByteFormatter.Bytes(v.TotalBytes)}"));
+        }
 
         return string.Join(" · ", parts);
     }

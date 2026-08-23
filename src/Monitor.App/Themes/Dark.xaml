@@ -194,19 +194,27 @@
         </Style.Triggers>
     </Style>
 
-    <!-- ストレージ一覧の行。区切り線を使わず、偶数行にごく薄い背景を敷いて縞にする。
-         未準備（IsReady=False）のドライブは薄く表示する。 -->
+    <!-- ストレージ一覧のボリューム/ネットワーク行。物理ディスクごとのグループ化で見出し行
+         (StorageDiskHeaderStyle) がグループの頭を示すようになったため、旧来の AlternationCount による
+         縞模様（見出し行が混ざると意味をなさない）は廃止した。未準備（IsReady=False）のドライブは薄く表示する。 -->
     <Style x:Key="StorageRowStyle" TargetType="Border">
         <Setter Property="Background" Value="Transparent" />
-        <Setter Property="MinHeight" Value="16" />
+        <Setter Property="MinHeight" Value="15" />
         <Style.Triggers>
-            <DataTrigger Binding="{Binding RelativeSource={RelativeSource AncestorType=ContentPresenter}, Path=(ItemsControl.AlternationIndex)}" Value="1">
-                <Setter Property="Background" Value="#08FFFFFF" />
-            </DataTrigger>
             <DataTrigger Binding="{Binding IsReady}" Value="False">
                 <Setter Property="Opacity" Value="0.45" />
             </DataTrigger>
         </Style.Triggers>
+    </Style>
+
+    <!-- ストレージ一覧の物理ディスク見出し行。ごく薄い背景（縞背景と同じ #08FFFFFF）でグループの頭を示す。
+         上に3px マージンを空けてグループ間の区切りにする（最初のグループの上に空いても実害は無いため
+         先頭だけ特別扱いはしていない）。 -->
+    <Style x:Key="StorageDiskHeaderStyle" TargetType="Border">
+        <Setter Property="Background" Value="#08FFFFFF" />
+        <Setter Property="Margin" Value="0,2,0,0" />
+        <Setter Property="Padding" Value="0,1,0,2" />
+        <Setter Property="MinHeight" Value="16" />
     </Style>
 
     <!-- ===== SectionExpander ===== -->

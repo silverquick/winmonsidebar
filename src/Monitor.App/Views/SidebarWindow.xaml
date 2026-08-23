@@ -4,6 +4,7 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:shell="clr-namespace:Monitor.App.Shell"
     xmlns:controls="clr-namespace:Monitor.App.Controls"
+    xmlns:vm="clr-namespace:Monitor.App.ViewModels"
     Title="System Monitor"
     Width="340"
     Height="900"
@@ -249,6 +250,110 @@
                                        SectionSummary="{Binding StorageSummary}" IsExpanded="{Binding IsStorageExpanded}"
                                        Margin="12,0,12,0">
                 <StackPanel>
+                    <!-- Property 要素（StackPanel.Resources）は子要素の先頭または末尾でなければ
+                         ならないため、通常のコンテンツ（Grid 等）より前に置く。 -->
+                    <StackPanel.Resources>
+                        <!-- 物理ディスク見出し行 (Kind = Disk)。このディスクの書き込み履歴スパークラインを
+                             情報行(モデル名・バス種別・R/W・Busy%・温度)の Grid と同じセルに重ねる
+                             （専用の段を持たせない）。GPU 温度スパークライン（このファイル内 GPU セクション、
+                             背面グラフ+前面ラベルの Grid）と同じ重ね方だが、ここは文字情報が6列と多いため
+                             可読性を優先し、背面のグラフ側を Opacity で弱める（GPU 側は逆に前面ラベルを弱めている）。
+                             数値列はすべて固定幅（SharedSizeGroup は使わない）: 桁数が変わるたび
+                             （例 "9M"→"12M"）に列幅が動いて隣の * 列や他の数値がずれるのを防ぐため。 -->
+                        <DataTemplate x:Key="StorageDiskRowTemplate">
+                            <Border Style="{StaticResource StorageDiskHeaderStyle}" ToolTip="{Binding TooltipText}">
+                                <Grid>
+                                    <!-- 背面: 書き込み履歴グラフ。Height は指定せず、重ねた Grid の高さ
+                                         （= 前面の情報行 Grid の自然な高さ）いっぱいに広がる。文字の可読性を
+                                         優先するため薄くする。書き込みは絶対値なので上部合計グラフと同じく
+                                         AutoScale で都度スケールする。
+                                         Values は float[] 型（配列型）の依存関係プロパティのため、DataTemplate 内で
+                                         属性として直接バインドすると MC4102 "PropertyArrayStart" エラーになる
+                                         （WPF のコンパイラの既知の制約）。Style の Setter 経由にすると回避できる。 -->
+                                    <controls:Sparkline Opacity="0.4" AutoScale="True"
+                                                         Stroke="{StaticResource DiskWriteAccentBrush}" Fill="{StaticResource DiskWriteFillBrush}">
+                                        <controls:Sparkline.Style>
+                                            <Style TargetType="controls:Sparkline">
+                                                <Setter Property="Values" Value="{Binding WriteHistory}" />
+                                            </Style>
+                                        </controls:Sparkline.Style>
+                                    </controls:Sparkline>
+                                    <!-- 前面: 情報行。 -->
+                                    <Grid VerticalAlignment="Center">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <!-- バス種別 "NVMe SSD"/"SATA HDD" は最大8文字。Cascadia Mono 11px は
+                                                 1文字約6.6pxなので 8×6.6≒53px。少し余裕を見て54px。 -->
+                                            <ColumnDefinition Width="54" />
+                                            <!-- 読み込み/書き込み: ShortRate の最長は "999T"/"9.9T" などの4文字≒26px。
+                                                 TextBlock 側の右マージン6pxを足して34pxにする（列幅=テキスト幅ちょうどだと
+                                                 Arrange で列幅にクリップされて数字が欠ける）。 -->
+                                            <ColumnDefinition Width="34" />
+                                            <ColumnDefinition Width="34" />
+                                            <!-- Busy%: 最長 "100%" の4文字≒26px。右マージン6px込みで34px。 -->
+                                            <ColumnDefinition Width="34" />
+                                            <!-- 温度: 最長 "100°C" の5文字≒33px。最終列で右マージンが無いので36pxで足りる。 -->
+                                            <ColumnDefinition Width="36" />
+                                        </Grid.ColumnDefinitions>
+
+                                        <TextBlock Grid.Column="0" Text="{Binding ModelText}" Style="{StaticResource ProcessNameStyle}"
+                                                   FontWeight="SemiBold" TextTrimming="CharacterEllipsis" Margin="0,0,6,0" />
+                                        <TextBlock Grid.Column="1" Text="{Binding BusTypeText}" Style="{StaticResource SubTextStyle}"
+                                                   HorizontalAlignment="Left" VerticalAlignment="Center" Margin="0,0,6,0" />
+                                        <!-- 読み・書きの列には見出しが無いので、上部合計グラフと同じ色を付けて
+                                             どちらの列かが色で分かるようにする。 -->
+                                        <TextBlock Grid.Column="2" Text="{Binding ReadText}" Style="{StaticResource ProcessValueStyle}" Margin="0,0,6,0"
+                                                   Foreground="{StaticResource DiskAccentBrush}" />
+                                        <TextBlock Grid.Column="3" Text="{Binding WriteText}" Style="{StaticResource ProcessValueStyle}" Margin="0,0,6,0"
+                                                   Foreground="{StaticResource DiskWriteAccentBrush}" />
+                                        <TextBlock Grid.Column="4" Text="{Binding BusyPercentText}" Style="{StaticResource ProcessValueStyle}" Margin="0,0,6,0" />
+                                        <TextBlock Grid.Column="5" Text="{Binding TemperatureText}" Style="{StaticResource ProcessValueStyle}" />
+                                    </Grid>
+                                </Grid>
+                            </Border>
+                        </DataTemplate>
+
+                        <!-- ボリューム行 (Kind = Volume) / ネットワーク行 (Kind = Network) 共通レイアウト。
+                             13px 列はネットワーク行のときだけワイヤーフレーム地球儀アイコンを表示する。
+                             R/W・温度は物理ディスク見出し行に集約したのでここには無い。 -->
+                        <DataTemplate x:Key="StorageVolumeRowTemplate">
+                            <Border Style="{StaticResource StorageRowStyle}" ToolTip="{Binding TooltipText}">
+                                <Grid VerticalAlignment="Center">
+                                    <Grid.ColumnDefinitions>
+                                        <!-- 見出し行モデル名の位置に対するインデント幅。ネットワーク行はここへアイコンが乗る。 -->
+                                        <ColumnDefinition Width="13" />
+                                        <!-- ドライブレターは常に1文字+":"の2文字だが、SemiBold のグリフ幅に余裕を見て24px。 -->
+                                        <ColumnDefinition Width="24" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="56" />
+                                        <!-- 使用率: 最長 "100%" の4文字≒26px。右マージン6px込みで34px。 -->
+                                        <ColumnDefinition Width="34" />
+                                        <!-- 使用/合計容量: ByteFormatter.BytesPair の最長は "999 / 999 GB" の12文字≒80px。
+                                             最終列で右マージンが無いぶん84pxで足りる。 -->
+                                        <ColumnDefinition Width="84" />
+                                    </Grid.ColumnDefinitions>
+
+                                    <!-- ネットワークドライブ用アイコン（ワイヤーフレーム地球儀。フォント絵文字は使わない） -->
+                                    <Path Grid.Column="0"
+                                          Data="M1,5 A4,4 0 1 0 9,5 A4,4 0 1 0 1,5 M1,5 A4,1.6 0 1 0 9,5 A4,1.6 0 1 0 1,5 M5,1 A1.6,4 0 1 0 5,9 A1.6,4 0 1 0 5,1"
+                                          Width="9" Height="9" Stretch="Uniform" Stroke="{StaticResource SidebarSubTextBrush}"
+                                          StrokeThickness="0.8" VerticalAlignment="Center"
+                                          Visibility="{Binding IsNetwork, Converter={StaticResource BoolToVisibilityConverter}}" />
+                                    <TextBlock Grid.Column="1" Text="{Binding DriveLetterText}" Style="{StaticResource ProcessNameStyle}"
+                                               FontWeight="SemiBold" Margin="0,0,6,0" />
+                                    <TextBlock Grid.Column="2" Text="{Binding LabelText}" Style="{StaticResource SubTextStyle}"
+                                               TextTrimming="CharacterEllipsis" VerticalAlignment="Center" Margin="0,0,6,0" />
+                                    <controls:GaugeBar Grid.Column="3" Height="5" Value="{Binding GaugeValue}"
+                                                        Style="{StaticResource StorageGaugeBarStyle}" VerticalAlignment="Center" Margin="0,0,6,0"
+                                                        Visibility="{Binding HasCapacity, Converter={StaticResource BoolToVisibilityConverter}}" />
+                                    <TextBlock Grid.Column="4" Text="{Binding UsagePercentText}" Style="{StaticResource ProcessValueStyle}" Margin="0,0,6,0"
+                                               Visibility="{Binding HasCapacity, Converter={StaticResource BoolToVisibilityConverter}}" />
+                                    <TextBlock Grid.Column="5" Text="{Binding CapacityText}" Style="{StaticResource ProcessValueStyle}" />
+                                </Grid>
+                            </Border>
+                        </DataTemplate>
+                    </StackPanel.Resources>
+
                     <!-- 読み・書きの値をグラフの線と同じ色にして凡例を兼ねさせる
                          （ネットワークの下り・上りと同じ考え方）。 -->
                     <Grid Margin="0,0,0,2">
@@ -262,58 +367,32 @@
                                    Foreground="{StaticResource DiskWriteAccentBrush}" />
                     </Grid>
                     <!-- 読み込み・書き込みを1つのグラフに重ねる（Sparkline 自体は1系列描画なので2つ重ねる）。 -->
-                    <Grid Height="28" Margin="0,0,0,4">
+                    <Grid Height="20" Margin="0,0,0,4">
                         <controls:Sparkline Values="{Binding DiskReadSparkline}" AutoScale="True"
                                              Stroke="{StaticResource DiskAccentBrush}" Fill="{StaticResource DiskFillBrush}" />
                         <controls:Sparkline Values="{Binding DiskWriteSparkline}" AutoScale="True"
                                              Stroke="{StaticResource DiskWriteAccentBrush}" Fill="{StaticResource DiskWriteFillBrush}" />
                     </Grid>
 
-                    <ItemsControl ItemsSource="{Binding StorageRows}" AlternationCount="2">
+                    <!-- AlternationCount による縞は見出し行が混ざると意味をなさないため廃止し、
+                         見出し行の薄い背景(StorageDiskHeaderStyle)でグループの頭を示す方式にした。
+                         StorageRows はキー差分更新のためフラットなまま保ち、行種別 (Kind) ごとの
+                         テンプレート切り替えは ContentPresenter + DataTrigger で行う。 -->
+                    <ItemsControl ItemsSource="{Binding StorageRows}">
                         <ItemsControl.ItemTemplate>
                             <DataTemplate>
-                                <Border Style="{StaticResource StorageRowStyle}" ToolTip="{Binding TooltipText}">
-                                    <Grid VerticalAlignment="Center">
-                                        <Grid.ColumnDefinitions>
-                                            <!-- SharedSizeGroup 無しの Auto だと行ごとに幅が変わり列がずれるため、
-                                                 ネットワークアイコンが無い行でも幅を揃えられるよう固定幅にする。 -->
-                                            <ColumnDefinition Width="13" />
-                                            <ColumnDefinition Width="Auto" SharedSizeGroup="StorageLetterCol" />
-                                            <ColumnDefinition Width="*" />
-                                            <ColumnDefinition Width="56" />
-                                            <ColumnDefinition Width="Auto" SharedSizeGroup="StoragePctCol" />
-                                            <ColumnDefinition Width="Auto" SharedSizeGroup="StorageFreeCol" />
-                                            <ColumnDefinition Width="Auto" SharedSizeGroup="StorageReadCol" />
-                                            <ColumnDefinition Width="Auto" SharedSizeGroup="StorageWriteCol" />
-                                            <ColumnDefinition Width="Auto" SharedSizeGroup="StorageTempCol" />
-                                        </Grid.ColumnDefinitions>
-
-                                        <!-- ネットワークドライブ用アイコン（ワイヤーフレーム地球儀。フォント絵文字は使わない） -->
-                                        <Path Grid.Column="0"
-                                              Data="M1,5 A4,4 0 1 0 9,5 A4,4 0 1 0 1,5 M1,5 A4,1.6 0 1 0 9,5 A4,1.6 0 1 0 1,5 M5,1 A1.6,4 0 1 0 5,9 A1.6,4 0 1 0 5,1"
-                                              Width="9" Height="9" Stretch="Uniform" Stroke="{StaticResource SidebarSubTextBrush}"
-                                              StrokeThickness="0.8" VerticalAlignment="Center"
-                                              Visibility="{Binding IsNetwork, Converter={StaticResource BoolToVisibilityConverter}}" />
-                                        <TextBlock Grid.Column="1" Text="{Binding DriveLetterText}" Style="{StaticResource ProcessNameStyle}"
-                                                   FontWeight="SemiBold" Margin="0,0,6,0" />
-                                        <TextBlock Grid.Column="2" Text="{Binding LabelText}" Style="{StaticResource SubTextStyle}"
-                                                   TextTrimming="CharacterEllipsis" VerticalAlignment="Center" Margin="0,0,6,0" />
-                                        <controls:GaugeBar Grid.Column="3" Height="5" Value="{Binding GaugeValue}"
-                                                            Style="{StaticResource StorageGaugeBarStyle}" VerticalAlignment="Center" Margin="0,0,6,0"
-                                                            Visibility="{Binding HasCapacity, Converter={StaticResource BoolToVisibilityConverter}}" />
-                                        <TextBlock Grid.Column="4" Text="{Binding UsagePercentText}" Style="{StaticResource ProcessValueStyle}" Margin="0,0,6,0"
-                                                   Visibility="{Binding HasCapacity, Converter={StaticResource BoolToVisibilityConverter}}" />
-                                        <TextBlock Grid.Column="5" Text="{Binding FreeText}" Style="{StaticResource ProcessValueStyle}" Margin="0,0,6,0"
-                                                   Visibility="{Binding HasCapacity, Converter={StaticResource BoolToVisibilityConverter}}" />
-                                        <!-- 読み・書きの列には見出しが無いので、上のグラフと同じ色を付けて
-                                             どちらの列かが色で分かるようにする。 -->
-                                        <TextBlock Grid.Column="6" Text="{Binding ReadText}" Style="{StaticResource ProcessValueStyle}" Margin="0,0,6,0"
-                                                   Foreground="{StaticResource DiskAccentBrush}" />
-                                        <TextBlock Grid.Column="7" Text="{Binding WriteText}" Style="{StaticResource ProcessValueStyle}" Margin="0,0,6,0"
-                                                   Foreground="{StaticResource DiskWriteAccentBrush}" />
-                                        <TextBlock Grid.Column="8" Text="{Binding TemperatureText}" Style="{StaticResource ProcessValueStyle}" />
-                                    </Grid>
-                                </Border>
+                                <ContentPresenter Content="{Binding}">
+                                    <ContentPresenter.Style>
+                                        <Style TargetType="ContentPresenter">
+                                            <Setter Property="ContentTemplate" Value="{StaticResource StorageVolumeRowTemplate}" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding Kind}" Value="{x:Static vm:StorageRowKind.Disk}">
+                                                    <Setter Property="ContentTemplate" Value="{StaticResource StorageDiskRowTemplate}" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </ContentPresenter.Style>
+                                </ContentPresenter>
                             </DataTemplate>
                         </ItemsControl.ItemTemplate>
                     </ItemsControl>

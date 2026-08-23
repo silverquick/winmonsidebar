@@ -17,6 +17,29 @@ public static class ByteFormatter
     /// <summary>例: "1.2 MB/s"。</summary>
     public static string BytesPerSec(double value) => Format(value, 1024d, ByteRateUnits);
 
+    /// <summary>使用量/合計量を単位を共有して整形する。例: "1.4 / 2.0 TB"。
+    /// <see cref="Bytes"/> をそれぞれ独立に2回呼ぶと単位が値ごとに選ばれてしまい "1.4 TB / 2.0 TB" のように
+    /// 単位が重複表示される。合計側の値で単位（桁）を決め、使用量も同じ単位に合わせて整形する。</summary>
+    public static string BytesPair(double used, double total)
+    {
+        double scaledTotal = Normalize(total);
+        int unitIndex = 0;
+
+        while (scaledTotal >= 1024d && unitIndex < ByteUnits.Length - 1)
+        {
+            scaledTotal /= 1024d;
+            unitIndex++;
+        }
+
+        double scaledUsed = Normalize(used) / Math.Pow(1024d, unitIndex);
+
+        // Format と同じ小数桁ルール: 生バイト(unitIndex==0)は整数、換算後は10未満なら小数1桁、それ以外は0桁。
+        int decimals = unitIndex == 0 ? 0 : (scaledTotal < 10d ? 1 : 0);
+        string format = decimals == 0 ? "F0" : "F1";
+
+        return $"{scaledUsed.ToString(format, CultureInfo.InvariantCulture)} / {scaledTotal.ToString(format, CultureInfo.InvariantCulture)} {ByteUnits[unitIndex]}";
+    }
+
     /// <summary>バイト/秒を bps 換算して整形する。例: "842 Mbps"。</summary>
     public static string Bits(double bytesPerSec)
     {
