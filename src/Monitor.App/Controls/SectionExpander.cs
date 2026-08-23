@@ -15,12 +15,14 @@ namespace Monitor.App.Controls;
 [TemplatePart(Name = PartHeader, Type = typeof(Border))]
 [TemplatePart(Name = PartContent, Type = typeof(ContentPresenter))]
 [TemplatePart(Name = PartSummary, Type = typeof(TextBlock))]
+[TemplatePart(Name = PartSubtitle, Type = typeof(TextBlock))]
 [TemplatePart(Name = PartChevron, Type = typeof(Path))]
 public sealed class SectionExpander : HeaderedContentControl
 {
     private const string PartHeader = "PART_Header";
     private const string PartContent = "PART_Content";
     private const string PartSummary = "PART_Summary";
+    private const string PartSubtitle = "PART_Subtitle";
     private const string PartChevron = "PART_Chevron";
 
     // 10x10 のビューポート内に描く三角形のシェブロン。フォント絵文字は使わない。
@@ -37,6 +39,12 @@ public sealed class SectionExpander : HeaderedContentControl
 
     public static readonly DependencyProperty SectionSummaryProperty = DependencyProperty.Register(
         nameof(SectionSummary),
+        typeof(string),
+        typeof(SectionExpander),
+        new FrameworkPropertyMetadata(string.Empty));
+
+    public static readonly DependencyProperty SectionSubtitleProperty = DependencyProperty.Register(
+        nameof(SectionSubtitle),
         typeof(string),
         typeof(SectionExpander),
         new FrameworkPropertyMetadata(string.Empty));
@@ -68,6 +76,7 @@ public sealed class SectionExpander : HeaderedContentControl
     private Border? _headerPart;
     private ContentPresenter? _contentPart;
     private TextBlock? _summaryPart;
+    private TextBlock? _subtitlePart;
     private Path? _chevronPart;
 
     public SectionExpander()
@@ -88,6 +97,14 @@ public sealed class SectionExpander : HeaderedContentControl
     {
         get => (string)GetValue(SectionSummaryProperty);
         set => SetValue(SectionSummaryProperty, value);
+    }
+
+    /// <summary>展開時に見出し右側へ表示する副題（モデル名など、"AMD Ryzen 5 5600X ..." のような長い文字列）。
+    /// 未設定（既定の空文字）ならヘッダーに何も表示されない。</summary>
+    public string SectionSubtitle
+    {
+        get => (string)GetValue(SectionSubtitleProperty);
+        set => SetValue(SectionSubtitleProperty, value);
     }
 
     /// <summary>展開状態。既定 true。双方向バインド可能。</summary>
@@ -123,6 +140,7 @@ public sealed class SectionExpander : HeaderedContentControl
         _headerPart = GetTemplateChild(PartHeader) as Border;
         _contentPart = GetTemplateChild(PartContent) as ContentPresenter;
         _summaryPart = GetTemplateChild(PartSummary) as TextBlock;
+        _subtitlePart = GetTemplateChild(PartSubtitle) as TextBlock;
         _chevronPart = GetTemplateChild(PartChevron) as Path;
 
         if (_headerPart is not null)
@@ -162,6 +180,12 @@ public sealed class SectionExpander : HeaderedContentControl
             _summaryPart.Visibility = expanded ? Visibility.Collapsed : Visibility.Visible;
         }
 
+        if (_subtitlePart is not null)
+        {
+            // SectionSubtitle は展開時のみ表示。SectionSummary とは逆で、コンテンツ本体と同じ扱いにする。
+            _subtitlePart.Visibility = expanded ? Visibility.Visible : Visibility.Collapsed;
+        }
+
         if (_chevronPart is not null)
         {
             _chevronPart.Data = expanded ? ChevronDownGeometry : ChevronRightGeometry;
@@ -187,17 +211,22 @@ public sealed class SectionExpander : HeaderedContentControl
         header.Name = PartHeader;
         header.SetValue(Grid.RowProperty, 0);
         header.SetValue(Border.BackgroundProperty, Brushes.Transparent);
-        header.SetValue(Border.PaddingProperty, new Thickness(0, 4, 0, 4));
+        // 9 セクション全部に効く余白。340px 幅サイドバーの縦の詰まりを緩和するため
+        // ヘッダー上下の Padding を 4→2px に切り詰める（CPU/GPU セクション圧縮の一環）。
+        header.SetValue(Border.PaddingProperty, new Thickness(0, 2, 0, 2));
         header.SetValue(FrameworkElement.CursorProperty, Cursors.Hand);
         header.SetValue(UIElement.SnapsToDevicePixelsProperty, true);
 
         FrameworkElementFactory headerGrid = new(typeof(Grid));
         FrameworkElementFactory colAccent = new(typeof(ColumnDefinition));
         colAccent.SetValue(ColumnDefinition.WidthProperty, new GridLength(3));
+        // タイトル（"CPU" 等の短い固定文字列）は自然な幅だけを取る。
+        // 残りのスペースは colSummary（要約 / 副題）側の Star に譲り、長い副題はそちら側で
+        // 縮んで省略記号になる（タイトルが押し出されないようにするため）。
         FrameworkElementFactory colTitle = new(typeof(ColumnDefinition));
-        colTitle.SetValue(ColumnDefinition.WidthProperty, new GridLength(1, GridUnitType.Star));
+        colTitle.SetValue(ColumnDefinition.WidthProperty, GridLength.Auto);
         FrameworkElementFactory colSummary = new(typeof(ColumnDefinition));
-        colSummary.SetValue(ColumnDefinition.WidthProperty, GridLength.Auto);
+        colSummary.SetValue(ColumnDefinition.WidthProperty, new GridLength(1, GridUnitType.Star));
         FrameworkElementFactory colChevron = new(typeof(ColumnDefinition));
         colChevron.SetValue(ColumnDefinition.WidthProperty, GridLength.Auto);
         headerGrid.AppendChild(colAccent);
@@ -230,6 +259,19 @@ public sealed class SectionExpander : HeaderedContentControl
         summary.SetValue(FrameworkElement.MarginProperty, new Thickness(8, 0, 6, 0));
         summary.SetValue(TextBlock.VerticalAlignmentProperty, VerticalAlignment.Center);
 
+        // SectionSubtitle（モデル名など）。SectionSummary と同じセルに重ねて配置し、
+        // 展開状態に応じてどちらか一方だけを表示する（ApplyExpandedVisualState 参照）。
+        // colSummary は Star 幅なので、長い文字列は TextTrimming で省略されタイトル側を圧迫しない。
+        FrameworkElementFactory subtitle = new(typeof(TextBlock));
+        subtitle.Name = PartSubtitle;
+        subtitle.SetValue(Grid.ColumnProperty, 2);
+        subtitle.SetValue(TextBlock.TextProperty, new TemplateBindingExtension(SectionSubtitleProperty));
+        subtitle.SetResourceReference(FrameworkElement.StyleProperty, "SubTextStyle");
+        subtitle.SetValue(TextBlock.TextTrimmingProperty, TextTrimming.CharacterEllipsis);
+        subtitle.SetValue(FrameworkElement.HorizontalAlignmentProperty, HorizontalAlignment.Right);
+        subtitle.SetValue(FrameworkElement.MarginProperty, new Thickness(8, 0, 6, 0));
+        subtitle.SetValue(TextBlock.VerticalAlignmentProperty, VerticalAlignment.Center);
+
         FrameworkElementFactory chevron = new(typeof(Path));
         chevron.Name = PartChevron;
         chevron.SetValue(Grid.ColumnProperty, 3);
@@ -244,6 +286,7 @@ public sealed class SectionExpander : HeaderedContentControl
         headerGrid.AppendChild(accentBar);
         headerGrid.AppendChild(title);
         headerGrid.AppendChild(summary);
+        headerGrid.AppendChild(subtitle);
         headerGrid.AppendChild(chevron);
         header.AppendChild(headerGrid);
 
@@ -251,7 +294,8 @@ public sealed class SectionExpander : HeaderedContentControl
         FrameworkElementFactory content = new(typeof(ContentPresenter));
         content.Name = PartContent;
         content.SetValue(Grid.RowProperty, 1);
-        content.SetValue(FrameworkElement.MarginProperty, new Thickness(0, 3, 0, 0));
+        // ヘッダー Padding 圧縮（4→2px）に合わせてコンテンツ側の上マージンも 3→1px に詰める。
+        content.SetValue(FrameworkElement.MarginProperty, new Thickness(0, 1, 0, 0));
         content.SetValue(ContentPresenter.ContentProperty, new TemplateBindingExtension(ContentControl.ContentProperty));
         content.SetValue(ContentPresenter.ContentTemplateProperty, new TemplateBindingExtension(ContentControl.ContentTemplateProperty));
 

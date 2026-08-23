@@ -190,11 +190,9 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
     private double _gpuComputeValue;
     public double GpuComputeValue { get => _gpuComputeValue; private set => SetProperty(ref _gpuComputeValue, value); }
 
-    private string _gpuTemperatureText = "—";
-    public string GpuTemperatureText { get => _gpuTemperatureText; private set => SetProperty(ref _gpuTemperatureText, value); }
-
-    private string _gpuHotspotTemperatureText = "—";
-    public string GpuHotspotTemperatureText { get => _gpuHotspotTemperatureText; private set => SetProperty(ref _gpuHotspotTemperatureText, value); }
+    // GPU 温度・ホットスポット温度は StatRow 1 行（"温度 / HS"）に統合して表示する。
+    private string _gpuTemperatureHotspotText = "—";
+    public string GpuTemperatureHotspotText { get => _gpuTemperatureHotspotText; private set => SetProperty(ref _gpuTemperatureHotspotText, value); }
 
     private string _gpuFanText = "—";
     public string GpuFanText { get => _gpuFanText; private set => SetProperty(ref _gpuFanText, value); }
@@ -249,11 +247,10 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
     private string _memoryCompressedText = "—";
     public string MemoryCompressedText { get => _memoryCompressedText; private set => SetProperty(ref _memoryCompressedText, value); }
 
-    private string _memoryPoolPagedText = "—";
-    public string MemoryPoolPagedText { get => _memoryPoolPagedText; private set => SetProperty(ref _memoryPoolPagedText, value); }
-
-    private string _memoryPoolNonPagedText = "—";
-    public string MemoryPoolNonPagedText { get => _memoryPoolNonPagedText; private set => SetProperty(ref _memoryPoolNonPagedText, value); }
+    // ページプール・非ページプールは「プール」行に結合して1項目にする（レイアウト圧縮）。
+    // 内訳の2値は単位を共有して整形するため ByteFormatter.BytesPair を使う。
+    private string _memoryPoolText = "—";
+    public string MemoryPoolText { get => _memoryPoolText; private set => SetProperty(ref _memoryPoolText, value); }
 
     private string _memorySystemCacheText = "—";
     public string MemorySystemCacheText { get => _memorySystemCacheText; private set => SetProperty(ref _memorySystemCacheText, value); }
@@ -261,8 +258,10 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
     private string _memoryCommitText = string.Empty;
     public string MemoryCommitText { get => _memoryCommitText; private set => SetProperty(ref _memoryCommitText, value); }
 
-    private string _memoryCommitPeakText = "—";
-    public string MemoryCommitPeakText { get => _memoryCommitPeakText; private set => SetProperty(ref _memoryCommitPeakText, value); }
+    // コミットピークは専用行を持たず、「コミット」行の ToolTip に内訳として表示する
+    // （情報は削らず、UI 上の占有面積だけ減らす）。
+    private string _memoryCommitTooltipText = string.Empty;
+    public string MemoryCommitTooltipText { get => _memoryCommitTooltipText; private set => SetProperty(ref _memoryCommitTooltipText, value); }
 
     private string _memoryHandlesLine = string.Empty;
     public string MemoryHandlesLine { get => _memoryHandlesLine; private set => SetProperty(ref _memoryHandlesLine, value); }
@@ -419,8 +418,7 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
         GpuVideoValue = adapter.EngineVideoPercent;
         GpuComputeValue = adapter.EngineComputePercent;
 
-        GpuTemperatureText = ByteFormatter.Temperature(adapter.TemperatureC);
-        GpuHotspotTemperatureText = ByteFormatter.Temperature(adapter.HotspotTemperatureC);
+        GpuTemperatureHotspotText = FormatTemperaturePair(adapter.TemperatureC, adapter.HotspotTemperatureC);
         GpuFanText = FormatFan(adapter.FanPercent, adapter.FanRpm);
         GpuPowerText = FormatPower(adapter.PowerWatts, adapter.PowerLimitWatts);
         GpuMemoryClockText = FormatClockOrDash(adapter.MemoryClockMhz);
@@ -471,13 +469,12 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
         MemoryModifiedText = ByteFormatter.Bytes(memory.ModifiedBytes);
         MemoryFreeText = ByteFormatter.Bytes(memory.FreeBytes);
         MemoryCompressedText = ByteFormatter.Bytes(memory.CompressedBytes);
-        MemoryPoolPagedText = ByteFormatter.Bytes(memory.PoolPagedBytes);
-        MemoryPoolNonPagedText = ByteFormatter.Bytes(memory.PoolNonPagedBytes);
+        MemoryPoolText = ByteFormatter.BytesPair(memory.PoolPagedBytes, memory.PoolNonPagedBytes);
         MemorySystemCacheText = ByteFormatter.Bytes(memory.SystemCacheBytes);
-        MemoryCommitText = string.Create(
+        MemoryCommitText = ByteFormatter.BytesPair(memory.CommittedBytes, memory.CommitLimitBytes);
+        MemoryCommitTooltipText = string.Create(
             CultureInfo.InvariantCulture,
-            $"{ByteFormatter.Bytes(memory.CommittedBytes)} / {ByteFormatter.Bytes(memory.CommitLimitBytes)}");
-        MemoryCommitPeakText = ByteFormatter.Bytes(memory.CommitPeakBytes);
+            $"コミットピーク {ByteFormatter.Bytes(memory.CommitPeakBytes)}");
 
         MemoryHandlesLine = string.Create(
             CultureInfo.InvariantCulture,
@@ -1021,6 +1018,28 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
     }
 
     private static string FormatClockOrDash(double? mhz) => mhz is double v && v > 0 ? ByteFormatter.Clock(v) : "—";
+
+    /// <summary>GPU コア温度とホットスポット温度を "62 / 71 °C" のように1つのStatRowへ統合する。
+    /// 単位は末尾に1回だけ付ける。片方だけ取得できない場合は
+    /// <see cref="ByteFormatter.Temperature"/> と同じ表記（値単独 or "—"）にフォールバックし、
+    /// "62 / — °C" のような不自然な表示にはしない。</summary>
+    private static string FormatTemperaturePair(double? primary, double? hotspot)
+    {
+        if (primary is not double t)
+        {
+            // 本体温度が取れなければホットスポットだけを表示する（両方 null なら "—"）。
+            return ByteFormatter.Temperature(hotspot);
+        }
+
+        if (hotspot is not double hs)
+        {
+            return ByteFormatter.Temperature(t);
+        }
+
+        string tText = t.ToString("F0", CultureInfo.InvariantCulture);
+        string hsText = hs.ToString("F0", CultureInfo.InvariantCulture);
+        return string.Create(CultureInfo.InvariantCulture, $"{tText} / {hsText} °C");
+    }
 
     private static string FormatFan(double? percent, int? rpm)
     {

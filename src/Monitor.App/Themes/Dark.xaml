@@ -80,9 +80,11 @@
         <Setter Property="Margin" Value="0,0,0,6" />
     </Style>
 
+    <!-- CPU/GPU セクション圧縮のため 20→15px に縮小。メモリ等の他セクションにも共通で効く
+         （専用 Style へ分岐させず、全体で統一されたサイズにする）。 -->
     <Style x:Key="BigNumberStyle" TargetType="TextBlock">
         <Setter Property="FontFamily" Value="{StaticResource MonoFontFamily}" />
-        <Setter Property="FontSize" Value="20" />
+        <Setter Property="FontSize" Value="15" />
         <Setter Property="FontWeight" Value="Bold" />
         <Setter Property="Foreground" Value="{StaticResource SidebarForegroundBrush}" />
     </Style>

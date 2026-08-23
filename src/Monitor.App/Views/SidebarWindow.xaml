@@ -27,7 +27,7 @@
         <StackPanel Grid.IsSharedSizeScope="True">
 
             <!-- ヘッダー -->
-            <Grid Margin="12,8,12,4">
+            <Grid Margin="12,4,12,2">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
@@ -38,11 +38,10 @@
 
             <!-- CPU -->
             <controls:SectionExpander SectionKey="cpu" SectionTitle="CPU" AccentBrush="{StaticResource CpuAccentBrush}"
-                                       SectionSummary="{Binding CpuSummary}" IsExpanded="{Binding IsCpuExpanded}"
+                                       SectionSummary="{Binding CpuSummary}" SectionSubtitle="{Binding CpuModelText}"
+                                       IsExpanded="{Binding IsCpuExpanded}"
                                        Margin="12,0,12,0">
                 <StackPanel>
-                    <TextBlock Text="{Binding CpuModelText}" Style="{StaticResource SubTextStyle}"
-                               TextTrimming="CharacterEllipsis" Margin="0,0,0,3" />
                     <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
                         <TextBlock Text="{Binding CpuUsageText}" Style="{StaticResource BigNumberStyle}" VerticalAlignment="Bottom" />
                         <TextBlock Text="{Binding CpuCurrentClockText}" Style="{StaticResource ValueTextStyle}"
@@ -50,10 +49,10 @@
                     </StackPanel>
                     <controls:GaugeBar Height="5" Value="{Binding CpuGaugeValue}"
                                         Foreground="{StaticResource CpuAccentBrush}" Margin="0,0,0,4" />
-                    <controls:Sparkline Height="32" Values="{Binding CpuSparkline}" Minimum="0" Maximum="100"
+                    <controls:Sparkline Height="20" Values="{Binding CpuSparkline}" Minimum="0" Maximum="100"
                                          Stroke="{StaticResource CpuAccentBrush}" Fill="{StaticResource CpuFillBrush}"
                                          Margin="0,0,0,4" />
-                    <controls:CoreGrid Height="30" Values="{Binding CpuCoreValues}"
+                    <controls:CoreGrid Height="24" Values="{Binding CpuCoreValues}"
                                         LowBrush="{StaticResource CpuFillBrush}" HighBrush="{StaticResource CpuAccentBrush}"
                                         Margin="0,0,0,3" />
                     <TextBlock Text="{Binding CpuCoreCountText}" Style="{StaticResource SubTextStyle}" Margin="0,0,0,4" />
@@ -66,11 +65,10 @@
 
             <!-- GPU -->
             <controls:SectionExpander SectionKey="gpu" SectionTitle="GPU" AccentBrush="{StaticResource GpuAccentBrush}"
-                                       SectionSummary="{Binding GpuSummary}" IsExpanded="{Binding IsGpuExpanded}"
+                                       SectionSummary="{Binding GpuSummary}" SectionSubtitle="{Binding GpuAdapterNameText}"
+                                       IsExpanded="{Binding IsGpuExpanded}"
                                        Margin="12,0,12,0">
                 <StackPanel>
-                    <TextBlock Text="{Binding GpuAdapterNameText}" Style="{StaticResource SubTextStyle}"
-                               TextTrimming="CharacterEllipsis" Margin="0,0,0,3" />
                     <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
                         <TextBlock Text="{Binding GpuUsageText}" Style="{StaticResource BigNumberStyle}" VerticalAlignment="Bottom" />
                         <TextBlock Text="{Binding GpuCoreClockText}" Style="{StaticResource ValueTextStyle}"
@@ -78,7 +76,7 @@
                     </StackPanel>
                     <controls:GaugeBar Height="5" Value="{Binding GpuGaugeValue}"
                                         Foreground="{StaticResource GpuAccentBrush}" Margin="0,0,0,4" />
-                    <controls:Sparkline Height="32" Values="{Binding GpuSparkline}" Minimum="0" Maximum="100"
+                    <controls:Sparkline Height="20" Values="{Binding GpuSparkline}" Minimum="0" Maximum="100"
                                          Stroke="{StaticResource GpuAccentBrush}" Fill="{StaticResource GpuFillBrush}"
                                          Margin="0,0,0,4" />
 
@@ -118,12 +116,13 @@
                         </Grid>
                     </UniformGrid>
 
+                    <!-- 温度とホットスポット温度は1行に統合（"温度 / HS"）し、5項目→4項目にして
+                         UniformGrid Columns=2 での行数を3行→2行に減らす。 -->
                     <UniformGrid Columns="2" Margin="0,0,0,4">
-                        <controls:StatRow Label="温度" Value="{Binding GpuTemperatureText}" Margin="0,0,6,0" />
-                        <controls:StatRow Label="ホットスポット" Value="{Binding GpuHotspotTemperatureText}" />
-                        <controls:StatRow Label="ファン" Value="{Binding GpuFanText}" Margin="0,0,6,0" />
-                        <controls:StatRow Label="消費電力" Value="{Binding GpuPowerText}" />
-                        <controls:StatRow Label="メモリクロック" Value="{Binding GpuMemoryClockText}" Margin="0,0,6,0" />
+                        <controls:StatRow Label="温度 / HS" Value="{Binding GpuTemperatureHotspotText}" Margin="0,0,6,0" />
+                        <controls:StatRow Label="ファン" Value="{Binding GpuFanText}" />
+                        <controls:StatRow Label="消費電力" Value="{Binding GpuPowerText}" Margin="0,0,6,0" />
+                        <controls:StatRow Label="メモリクロック" Value="{Binding GpuMemoryClockText}" />
                     </UniformGrid>
                     <TextBlock Text="{Binding GpuVramText}" Style="{StaticResource ValueTextStyle}" Margin="0,0,0,3" />
                     <controls:GaugeBar Height="5" Value="{Binding GpuVramGaugeValue}" Foreground="{StaticResource GpuAccentBrush}" Margin="0,0,0,4" />
@@ -153,19 +152,25 @@
                     </StackPanel>
 
                     <!-- 積み上げバー（使用中[圧縮を重ね塗り] / 変更済み / スタンバイ / 空き） -->
-                    <controls:StackedBar Height="12" Values="{Binding MemoryStackedValues}"
+                    <controls:StackedBar Height="8" Values="{Binding MemoryStackedValues}"
                                           OverlayValue="{Binding MemoryCompressedBytes}"
                                           SegmentBrushes="{StaticResource MemoryStackedBrushes}"
                                           OverlayBrush="{StaticResource MemCompressedBrush}"
                                           Margin="0,0,0,3" />
-                    <controls:Sparkline Height="28" Values="{Binding MemorySparkline}" Minimum="0" Maximum="100"
+                    <controls:Sparkline Height="20" Values="{Binding MemorySparkline}" Minimum="0" Maximum="100"
                                          Stroke="{StaticResource MemAccentBrush}" Fill="{StaticResource MemFillBrush}"
                                          Margin="0,0,0,4" />
 
                     <!-- 上2行は積み上げバーのセグメントに対応する項目。ラベルをバーと同じ色にして
                          凡例を兼ねさせ、読み順（左上→右下）がバーの並び順（使用中→変更済み→
                          スタンバイ→空き）と一致するように並べている。
-                         下2行はバーに対応しない項目なので既定のグレーのままにする。 -->
+                         3行目はバーに対応しない項目なので既定のグレーのままにする。
+                         4行目（プール・コミット）は元は別の UniformGrid（計5行）だったものを
+                         ページプール+非ページプール／コミット+コミットピークにそれぞれ結合し、
+                         1つの UniformGrid（4行）にまとめてレイアウトを圧縮した。値だけでは
+                         結合前の内訳が分からなくなるため ToolTip で補足する
+                         （コミットピークは MemoryCommitTooltipText、ページプール/非ページプールは
+                         値自体に両方の数値が残っているのでラベルのみの ToolTip で足りる）。 -->
                     <UniformGrid Columns="2" Margin="0,0,0,4">
                         <controls:StatRow Label="圧縮済み" Value="{Binding MemoryCompressedText}"
                                           LabelBrush="{StaticResource MemCompressedLabelBrush}" Margin="0,0,6,0" />
@@ -177,13 +182,10 @@
                                           LabelBrush="{StaticResource MemFreeLabelBrush}" />
                         <controls:StatRow Label="キャッシュ" Value="{Binding MemoryCachedText}" Margin="0,0,6,0" />
                         <controls:StatRow Label="システムキャッシュ" Value="{Binding MemorySystemCacheText}" />
-                        <controls:StatRow Label="ページプール" Value="{Binding MemoryPoolPagedText}" Margin="0,0,6,0" />
-                        <controls:StatRow Label="非ページプール" Value="{Binding MemoryPoolNonPagedText}" />
-                    </UniformGrid>
-
-                    <UniformGrid Columns="2" Margin="0,0,0,3">
-                        <controls:StatRow Label="コミット" Value="{Binding MemoryCommitText}" Margin="0,0,6,0" />
-                        <controls:StatRow Label="コミットピーク" Value="{Binding MemoryCommitPeakText}" />
+                        <controls:StatRow Label="プール" Value="{Binding MemoryPoolText}" Margin="0,0,6,0"
+                                          ToolTip="ページプール / 非ページプール" />
+                        <controls:StatRow Label="コミット" Value="{Binding MemoryCommitText}"
+                                          ToolTip="{Binding MemoryCommitTooltipText}" />
                     </UniformGrid>
 
                     <TextBlock Text="{Binding MemoryHardwareReservedText}" Style="{StaticResource TinyLabelStyle}" Margin="0,3,0,4"
@@ -404,11 +406,11 @@
                                        SectionSummary="{Binding NetworkSummary}" IsExpanded="{Binding IsNetworkExpanded}"
                                        Margin="12,0,12,0">
                 <StackPanel>
-                    <TextBlock Text="{Binding NetworkNicName}" Style="{StaticResource SubTextStyle}" Margin="0,0,0,3"
+                    <TextBlock Text="{Binding NetworkNicName}" Style="{StaticResource SubTextStyle}" Margin="0,0,0,2"
                                TextTrimming="CharacterEllipsis" />
                     <!-- 下り・上りを1行に並べ、グラフはストレージと同じく1つに重ねる。
                          色で系列を区別するので、値の文字色もグラフの線色に合わせる。 -->
-                    <Grid Margin="0,0,0,2">
+                    <Grid Margin="0,0,0,1">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*" />
                             <ColumnDefinition Width="Auto" />
@@ -418,7 +420,7 @@
                         <TextBlock Grid.Column="1" Text="{Binding NetworkUpText}" Style="{StaticResource ValueTextStyle}"
                                    Foreground="{StaticResource NetUpAccentBrush}" />
                     </Grid>
-                    <Grid Height="30" Margin="0,0,0,4">
+                    <Grid Height="24" Margin="0,0,0,3">
                         <controls:Sparkline Values="{Binding NetworkDownSparkline}" AutoScale="True"
                                              Stroke="{StaticResource NetAccentBrush}" Fill="{StaticResource NetFillBrush}" />
                         <controls:Sparkline Values="{Binding NetworkUpSparkline}" AutoScale="True"
@@ -467,17 +469,17 @@
 
                     <!-- 管理者権限がある場合 -->
                     <StackPanel Visibility="{Binding IsThermalElevated, Converter={StaticResource BoolToVisibilityConverter}}">
-                        <UniformGrid Columns="2" Margin="0,0,0,4">
-                            <controls:StatRow Label="CPU パッケージ" Value="{Binding ThermalCpuPackageText}" Margin="0,0,6,0" />
-                            <controls:StatRow Label="CPU 電力" Value="{Binding ThermalCpuPowerText}" />
-                            <controls:StatRow Label="マザーボード" Value="{Binding ThermalMotherboardText}" Margin="0,0,6,0" />
-                            <controls:StatRow Label="VRM" Value="{Binding ThermalVrmText}" />
+                        <UniformGrid Columns="2" Margin="0,0,0,3">
+                            <controls:StatRow Label="CPU パッケージ" Value="{Binding ThermalCpuPackageText}" Margin="0,0,6,0" Padding="0" MinHeight="0" />
+                            <controls:StatRow Label="CPU 電力" Value="{Binding ThermalCpuPowerText}" Padding="0" MinHeight="0" />
+                            <controls:StatRow Label="マザーボード" Value="{Binding ThermalMotherboardText}" Margin="0,0,6,0" Padding="0" MinHeight="0" />
+                            <controls:StatRow Label="VRM" Value="{Binding ThermalVrmText}" Padding="0" MinHeight="0" />
                         </UniformGrid>
 
                         <!-- コア温度・その他温度・ファンはいずれも件数が読めないリストなので、
                              2 列に流し込んで行数を半分にする（実機では コア1 / その他4 / ファン6 で、
                              1 列だと 11 行、2 列なら 6 行）。 -->
-                        <StackPanel Margin="0,0,0,3">
+                        <StackPanel Margin="0,0,0,1">
                             <TextBlock Text="コア温度" Style="{StaticResource TinyLabelStyle}" Margin="0,0,0,1" />
                             <ItemsControl ItemsSource="{Binding ThermalCoreTemperatures}">
                                 <ItemsControl.ItemsPanel>
@@ -485,13 +487,13 @@
                                 </ItemsControl.ItemsPanel>
                                 <ItemsControl.ItemTemplate>
                                     <DataTemplate>
-                                        <controls:StatRow Label="{Binding Name}" Value="{Binding ValueText}" Margin="0,0,6,0" />
+                                        <controls:StatRow Label="{Binding Name}" Value="{Binding ValueText}" Margin="0,0,6,0" Padding="0" MinHeight="0" />
                                     </DataTemplate>
                                 </ItemsControl.ItemTemplate>
                             </ItemsControl>
                         </StackPanel>
 
-                        <StackPanel Margin="0,0,0,3">
+                        <StackPanel Margin="0,0,0,1">
                             <TextBlock Text="その他温度" Style="{StaticResource TinyLabelStyle}" Margin="0,0,0,1" />
                             <ItemsControl ItemsSource="{Binding ThermalOtherTemperatures}">
                                 <ItemsControl.ItemsPanel>
@@ -499,7 +501,7 @@
                                 </ItemsControl.ItemsPanel>
                                 <ItemsControl.ItemTemplate>
                                     <DataTemplate>
-                                        <controls:StatRow Label="{Binding Name}" Value="{Binding ValueText}" Margin="0,0,6,0" />
+                                        <controls:StatRow Label="{Binding Name}" Value="{Binding ValueText}" Margin="0,0,6,0" Padding="0" MinHeight="0" />
                                     </DataTemplate>
                                 </ItemsControl.ItemTemplate>
                             </ItemsControl>
@@ -513,7 +515,7 @@
                                 </ItemsControl.ItemsPanel>
                                 <ItemsControl.ItemTemplate>
                                     <DataTemplate>
-                                        <controls:StatRow Label="{Binding Name}" Value="{Binding ValueText}" Margin="0,0,6,0" />
+                                        <controls:StatRow Label="{Binding Name}" Value="{Binding ValueText}" Margin="0,0,6,0" Padding="0" MinHeight="0" />
                                     </DataTemplate>
                                 </ItemsControl.ItemTemplate>
                             </ItemsControl>
@@ -525,9 +527,9 @@
             <!-- プロセス -->
             <controls:SectionExpander SectionKey="process" SectionTitle="プロセス" AccentBrush="{StaticResource CpuAccentBrush}"
                                        SectionSummary="{Binding ProcessSummary}" IsExpanded="{Binding IsProcessExpanded}"
-                                       Margin="12,0,12,12">
+                                       Margin="12,0,12,6">
                 <StackPanel>
-                    <Grid Margin="0,0,0,3">
+                    <Grid Margin="0,0,0,2">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*" />
                             <ColumnDefinition Width="Auto" SharedSizeGroup="CpuCol" />
@@ -540,7 +542,7 @@
                     <ItemsControl ItemsSource="{Binding Processes}">
                         <ItemsControl.ItemTemplate>
                             <DataTemplate>
-                                <Grid Margin="0,1">
+                                <Grid Margin="0,0,0,1">
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="*" />
                                         <ColumnDefinition Width="Auto" SharedSizeGroup="CpuCol" />
