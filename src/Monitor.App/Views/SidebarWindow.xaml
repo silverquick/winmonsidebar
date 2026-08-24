@@ -354,11 +354,9 @@
                                     <controls:GaugeBar Grid.Column="3" Height="5" Value="{Binding GaugeValue}"
                                                         Style="{StaticResource StorageGaugeBarStyle}" VerticalAlignment="Center" Margin="0,0,6,0"
                                                         Visibility="{Binding HasCapacity, Converter={StaticResource BoolToVisibilityConverter}}" />
-                                    <TextBlock Grid.Column="4" Text="{Binding UsagePercentText}" Style="{StaticResource ProcessValueStyle}" Margin="0,0,6,0"
-                                               Visibility="{Binding HasCapacity, Converter={StaticResource BoolToVisibilityConverter}}"
-                                               Foreground="{Binding AlertLevel, Converter={StaticResource AlertLevelToBrushConverter}}" />
-                                    <TextBlock Grid.Column="5" Text="{Binding CapacityText}" Style="{StaticResource ProcessValueStyle}"
-                                               Foreground="{Binding AlertLevel, Converter={StaticResource AlertLevelToBrushConverter}}" />
+                                    <TextBlock Grid.Column="4" Text="{Binding UsagePercentText}" Style="{StaticResource StorageVolumeValueStyle}" Margin="0,0,6,0"
+                                               Visibility="{Binding HasCapacity, Converter={StaticResource BoolToVisibilityConverter}}" />
+                                    <TextBlock Grid.Column="5" Text="{Binding CapacityText}" Style="{StaticResource StorageVolumeValueStyle}" />
                                 </Grid>
                             </Border>
                         </DataTemplate>

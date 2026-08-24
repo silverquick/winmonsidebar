@@ -142,6 +142,21 @@
         <Setter Property="HorizontalAlignment" Value="Right" />
     </Style>
 
+    <!-- ストレージのボリューム/ネットワーク行の使用率・使用量。通常時は BasedOn 元の
+         ProcessValueStyle（SidebarSubTextBrush）を使い、AlertLevel がある場合だけテーマの
+         警告色で上書きする。Foreground へ直接バインドしないため、正常値がローカル値として
+         スタイルの既定色を覆い隠すことはない。 -->
+    <Style x:Key="StorageVolumeValueStyle" TargetType="TextBlock" BasedOn="{StaticResource ProcessValueStyle}">
+        <Style.Triggers>
+            <DataTrigger Binding="{Binding AlertLevel}" Value="{x:Static alerts:AlertLevel.Caution}">
+                <Setter Property="Foreground" Value="{StaticResource AlertCautionBrush}" />
+            </DataTrigger>
+            <DataTrigger Binding="{Binding AlertLevel}" Value="{x:Static alerts:AlertLevel.Critical}">
+                <Setter Property="Foreground" Value="{StaticResource AlertCriticalBrush}" />
+            </DataTrigger>
+        </Style.Triggers>
+    </Style>
+
     <Style x:Key="StatLabelStyle" TargetType="TextBlock">
         <Setter Property="FontFamily" Value="{StaticResource DisplayFontFamily}" />
         <Setter Property="FontSize" Value="10" />
