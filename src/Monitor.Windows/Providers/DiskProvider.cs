@@ -7,8 +7,10 @@ namespace Monitor.Windows.Providers;
 
 /// <summary>Supplies <see cref="DiskSnapshot"/> for every physical disk on the machine, combining three
 /// sources: PDH <c>\PhysicalDisk(*)\</c> counters for Read/Write/% Disk Time (per-second), StorageApi's
-/// IOCTL_STORAGE_QUERY_PROPERTY temperature read (per-second, cheap open+ioctl+close per disk), and
-/// StorageApi's static identity/capacity/volume-mapping enumeration (cached, refreshed every
+/// IOCTL_STORAGE_QUERY_PROPERTY temperature read (per-second, cheap open+ioctl+close per disk - this same
+/// read also carries the drive's self-reported warning/critical temperature thresholds, cached sticky per
+/// drive since those are static even though the read repeats every sample), and StorageApi's static
+/// identity/capacity/volume-mapping enumeration (cached, refreshed every
 /// <see cref="StaticInfoRefreshInterval"/> to tolerate disks being added/removed at runtime).
 /// Physical disks that PDH does not report an instance for (e.g. it briefly lags a hot-plug) are still
 /// included, with Read/Write/Busy reported as 0.</summary>
@@ -29,6 +31,14 @@ public sealed class DiskProvider : IMetricProvider<DiskSnapshot>
     private IReadOnlyList<PhysicalDiskInfo> _physicalDisks = Array.Empty<PhysicalDiskInfo>();
     private IReadOnlyList<VolumeToDiskMapping> _volumes = Array.Empty<VolumeToDiskMapping>();
     private DateTime _lastStaticRefreshUtc = DateTime.MinValue;
+
+    // Warning/critical temperature thresholds are static per drive, but they arrive for free in the same
+    // per-sample temperature IOCTL call (see Sample()) rather than the separate 30-second static-info
+    // refresh, which doesn't touch temperature at all today - adding them there would mean a second,
+    // redundant IOCTL per drive every refresh instead of reusing data already being read every sample.
+    // Kept sticky (last known-good value per field) so a single transient read failure - which already
+    // nulls out that sample's current temperature - doesn't also blank out an otherwise-known threshold.
+    private readonly Dictionary<int, (double? Warning, double? Critical)> _temperatureThresholds = new();
 
     public string Name => "Disk";
 
@@ -97,7 +107,8 @@ public sealed class DiskProvider : IMetricProvider<DiskSnapshot>
             {
                 byDrive.TryGetValue(disk.DriveNumber, out PdhDiskRates rates);
 
-                double? temperature = StorageApi.TryReadTemperatureC(disk.DriveNumber);
+                DiskTemperatureReading temperatureReading = StorageApi.TryReadTemperature(disk.DriveNumber);
+                (double? warningC, double? criticalC) = UpdateAndGetThresholds(disk.DriveNumber, temperatureReading);
                 List<LogicalVolumeSnapshot> volumes = BuildVolumes(disk.DriveNumber);
 
                 string displayName = volumes.Count > 0
@@ -114,7 +125,9 @@ public sealed class DiskProvider : IMetricProvider<DiskSnapshot>
                     ReadBytesPerSec = rates.Read,
                     WriteBytesPerSec = rates.Write,
                     BusyPercent = rates.Busy,
-                    TemperatureC = temperature,
+                    TemperatureC = temperatureReading.CurrentC,
+                    WarningTemperatureC = warningC,
+                    CriticalTemperatureC = criticalC,
                     Volumes = volumes,
                     DisplayName = displayName,
                 });
@@ -149,7 +162,27 @@ public sealed class DiskProvider : IMetricProvider<DiskSnapshot>
         _busyCounter = null;
         _physicalDisks = Array.Empty<PhysicalDiskInfo>();
         _volumes = Array.Empty<VolumeToDiskMapping>();
+        _temperatureThresholds.Clear();
         IsAvailable = false;
+    }
+
+    /// <summary>Merges this sample's warning/critical threshold reading into the sticky per-drive cache
+    /// (field by field, so a threshold that came back null this sample - e.g. a transient IOCTL hiccup -
+    /// doesn't clobber a previously known-good value for that same field) and returns the resulting pair
+    /// to use for this sample.</summary>
+    private (double? Warning, double? Critical) UpdateAndGetThresholds(int driveNumber, DiskTemperatureReading reading)
+    {
+        _temperatureThresholds.TryGetValue(driveNumber, out (double? Warning, double? Critical) previous);
+
+        double? warning = reading.WarningC ?? previous.Warning;
+        double? critical = reading.CriticalC ?? previous.Critical;
+
+        if (warning.HasValue || critical.HasValue)
+        {
+            _temperatureThresholds[driveNumber] = (warning, critical);
+        }
+
+        return (warning, critical);
     }
 
     /// <summary>Re-reads physical disk identity/capacity and physical&lt;-&gt;logical volume mapping from

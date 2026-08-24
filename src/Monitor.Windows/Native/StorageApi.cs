@@ -14,6 +14,20 @@ public readonly record struct PhysicalDiskInfo(int DriveNumber, string Model, st
 /// drives, some virtual drives) are omitted by the caller of EnumerateFixedVolumesWithDiskMapping.</summary>
 public readonly record struct VolumeToDiskMapping(string DriveLetter, string? Label, ulong TotalBytes, ulong FreeBytes, int DiskNumber);
 
+/// <summary>Current temperature plus the drive-reported warning/critical thresholds, all three parsed
+/// from a single STORAGE_TEMPERATURE_DATA_DESCRIPTOR read (see ParseTemperature). Thresholds vary a lot
+/// by drive model (SSDs commonly warn around 70C, HDDs around 55C), so a caller building a warning UI
+/// should prefer these over any hardcoded constant, and only fall back to one when a drive doesn't
+/// report it (WarningC/CriticalC are null). A struct rather than a tuple/out-params to match this file's
+/// existing convention for multi-field IOCTL results (see PhysicalDiskInfo, VolumeToDiskMapping above),
+/// and non-nullable (with an Empty sentinel of all-null fields) rather than a nullable struct, since
+/// "nothing read" and "read but nothing valid" are the same case here and callers already have to check
+/// each field individually.</summary>
+public readonly record struct DiskTemperatureReading(double? CurrentC, double? WarningC, double? CriticalC)
+{
+    public static DiskTemperatureReading Empty { get; } = new();
+}
+
 /// <summary>
 /// Access to physical-disk identity/capacity/temperature and physical-to-logical-volume mapping via
 /// low-level storage IOCTLs. Every public method here never throws: failures are represented as an
@@ -115,30 +129,33 @@ public static partial class StorageApi
         return results;
     }
 
-    /// <summary>Reads the current composite temperature of one physical disk via
-    /// IOCTL_STORAGE_QUERY_PROPERTY/StorageDeviceTemperatureProperty. Returns null (never throws) if the
-    /// disk does not support temperature reporting (e.g. ERROR_INVALID_FUNCTION) or reports an
-    /// out-of-range value.</summary>
-    public static double? TryReadTemperatureC(int driveNumber)
+    /// <summary>Reads the current composite temperature of one physical disk, plus its drive-reported
+    /// warning/critical thresholds, via a single IOCTL_STORAGE_QUERY_PROPERTY/
+    /// StorageDeviceTemperatureProperty call (the thresholds live in the same
+    /// STORAGE_TEMPERATURE_DATA_DESCRIPTOR buffer as the temperature reading itself, so this never issues
+    /// more than the one IOCTL). Returns DiskTemperatureReading.Empty (never throws) if the disk does not
+    /// support temperature reporting (e.g. ERROR_INVALID_FUNCTION) or reports only out-of-range
+    /// values.</summary>
+    public static DiskTemperatureReading TryReadTemperature(int driveNumber)
     {
         try
         {
             using SafeFileHandle handle = OpenPhysicalDrive(driveNumber);
             if (handle.IsInvalid)
             {
-                return null;
+                return DiskTemperatureReading.Empty;
             }
 
             if (!TryQueryStorageProperty(handle, StorageDeviceTemperatureProperty, PropertyStandardQuery, 1024, out byte[] data))
             {
-                return null;
+                return DiskTemperatureReading.Empty;
             }
 
             return ParseTemperature(data);
         }
         catch
         {
-            return null;
+            return DiskTemperatureReading.Empty;
         }
     }
 
@@ -424,12 +441,15 @@ public static partial class StorageApi
     private static bool? ParseSeekPenalty(byte[] data)
         => data.Length > 8 ? data[8] != 0 : null;
 
-    /// <summary>Parses a STORAGE_TEMPERATURE_DATA_DESCRIPTOR buffer and returns the reading for sensor
-    /// Index 0 (the composite/overall temperature), falling back to the first reported sensor if no
-    /// entry is explicitly indexed 0. Returns null for an empty/undersized buffer or an out-of-range
-    /// value (&lt;=0 or &gt;150 degrees C, per the "invalid reading" convention used elsewhere in this
-    /// codebase's callers).</summary>
-    private static double? ParseTemperature(byte[] data)
+    /// <summary>Parses a STORAGE_TEMPERATURE_DATA_DESCRIPTOR buffer into the current composite
+    /// temperature (sensor Index 0, falling back to the first reported sensor if no entry is explicitly
+    /// indexed 0) plus the drive-reported warning/critical thresholds from the header. Returns
+    /// DiskTemperatureReading.Empty for an empty/undersized buffer. Each of the three fields is validated
+    /// independently against the same "invalid reading" convention used elsewhere in this codebase's
+    /// callers (&lt;=0 or &gt;150 degrees C is treated as absent) - drives commonly report 0, or don't
+    /// implement a field at all and leave it zeroed, so every field can be individually null even when
+    /// the others are valid.</summary>
+    private static DiskTemperatureReading ParseTemperature(byte[] data)
     {
         // Header: 0 Version, 4 Size, 8 CriticalTemperature, 10 WarningTemperature, 12 InfoCount,
         // 14 Reserved0[2], 16 Reserved1[2*ULONG]; TemperatureInfo[] starts at 24, 16 bytes each with
@@ -439,32 +459,51 @@ public static partial class StorageApi
 
         if (data.Length < headerSize + entrySize)
         {
-            return null;
+            return DiskTemperatureReading.Empty;
+        }
+
+        double? critical = ValidateTemperature(BitConverter.ToInt16(data, 8));
+        double? warning = ValidateTemperature(BitConverter.ToInt16(data, 10));
+
+        // A drive that reports a warning threshold at or above its own critical threshold isn't giving a
+        // usable pair - either it doesn't really implement these fields and is echoing back zeroed/
+        // garbage memory that happened to pass the >0/<=150 check, or it's a firmware quirk. Either way,
+        // showing it to the user as a meaningful warning/critical boundary would be misleading, so the
+        // whole pair is distrusted rather than picking one of the two arbitrarily.
+        if (warning.HasValue && critical.HasValue && warning.Value >= critical.Value)
+        {
+            warning = null;
+            critical = null;
         }
 
         ushort infoCount = BitConverter.ToUInt16(data, 12);
         int available = (data.Length - headerSize) / entrySize;
         int count = Math.Min(infoCount, available);
-        if (count <= 0)
-        {
-            return null;
-        }
 
         short? temperature = null;
-        for (int i = 0; i < count; i++)
+        if (count > 0)
         {
-            int entryOffset = headerSize + (i * entrySize);
-            ushort index = BitConverter.ToUInt16(data, entryOffset);
-            if (index == 0)
+            for (int i = 0; i < count; i++)
             {
-                temperature = BitConverter.ToInt16(data, entryOffset + 2);
-                break;
+                int entryOffset = headerSize + (i * entrySize);
+                ushort index = BitConverter.ToUInt16(data, entryOffset);
+                if (index == 0)
+                {
+                    temperature = BitConverter.ToInt16(data, entryOffset + 2);
+                    break;
+                }
             }
+
+            // No entry explicitly indexed 0: fall back to whatever the first reported sensor is.
+            temperature ??= BitConverter.ToInt16(data, headerSize + 2);
         }
 
-        // No entry explicitly indexed 0: fall back to whatever the first reported sensor is.
-        temperature ??= BitConverter.ToInt16(data, headerSize + 2);
-
-        return temperature is > 0 and <= 150 ? temperature.Value : null;
+        return new DiskTemperatureReading(ValidateTemperature(temperature), warning, critical);
     }
+
+    /// <summary>Applies the "invalid reading" convention (&lt;=0 or &gt;150 degrees C is treated as
+    /// absent/not-implemented) shared by the current-temperature, warning-threshold and
+    /// critical-threshold fields of STORAGE_TEMPERATURE_DATA_DESCRIPTOR.</summary>
+    private static double? ValidateTemperature(short? value)
+        => value is > 0 and <= 150 ? value.Value : null;
 }
