@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using Monitor.Core;
+using Monitor.Core.Alerts;
 using Monitor.Core.Collections;
 
 namespace Monitor.App.ViewModels;
@@ -30,13 +31,12 @@ public enum StorageRowKind
 /// </summary>
 public sealed class StorageRowViewModel : INotifyPropertyChanged
 {
-    private const double WarningThresholdPercent = 90.0;
-
     private StorageRowKind _kind;
 
     // ----- 共通 -----
     private bool _isReady = true;
     private string _tooltipText = "";
+    private AlertLevel _alertLevel;
 
     // ----- ディスク見出し行 (Kind = Disk) -----
     private string _modelText = string.Empty;
@@ -55,7 +55,6 @@ public sealed class StorageRowViewModel : INotifyPropertyChanged
     private bool _hasCapacity;
     private string _usagePercentText = "—";
     private double _gaugeValue;
-    private bool _isWarning;
     private string _capacityText = "";
 
     public StorageRowViewModel(string key)
@@ -77,6 +76,12 @@ public sealed class StorageRowViewModel : INotifyPropertyChanged
     /// <summary>見出し行: 物理ディスク番号・総容量など行に出ていない情報。
     /// ボリューム/ネットワーク行: ファイルシステム・ボリューム総容量。</summary>
     public string TooltipText { get => _tooltipText; private set => SetProperty(ref _tooltipText, value); }
+
+    /// <summary>この行の警告レベル。ディスク見出し行は温度（<see cref="AlertEvaluator.DiskTemperature"/>）、
+    /// ボリューム行は空き容量（<see cref="AlertEvaluator.DriveCapacity"/>）、ネットワーク行は切断
+    /// （<see cref="AlertEvaluator.NetworkDriveDisconnected"/>）から呼び出し側（<c>SidebarViewModel</c>）が
+    /// 判定して渡す。XAML 側でバー・値テキストの警告色切り替えに使う。</summary>
+    public AlertLevel AlertLevel { get => _alertLevel; private set => SetProperty(ref _alertLevel, value); }
 
     // ----- ディスク見出し行用プロパティ -----
 
@@ -118,9 +123,6 @@ public sealed class StorageRowViewModel : INotifyPropertyChanged
 
     public double GaugeValue { get => _gaugeValue; private set => SetProperty(ref _gaugeValue, value); }
 
-    /// <summary>使用率が90%以上。XAML 側でバーの警告色切り替えに使う。</summary>
-    public bool IsWarning { get => _isWarning; private set => SetProperty(ref _isWarning, value); }
-
     /// <summary>"使用 / 合計" 容量（例: "1.4 / 2.0 TB"）。未準備・容量不明なら "—"。</summary>
     public string CapacityText { get => _capacityText; private set => SetProperty(ref _capacityText, value); }
 
@@ -133,7 +135,8 @@ public sealed class StorageRowViewModel : INotifyPropertyChanged
         string busyPercentText,
         string temperatureText,
         double writeBytesPerSec,
-        string tooltipText)
+        string tooltipText,
+        AlertLevel alertLevel)
     {
         Kind = StorageRowKind.Disk;
         ModelText = modelText;
@@ -143,6 +146,7 @@ public sealed class StorageRowViewModel : INotifyPropertyChanged
         BusyPercentText = busyPercentText;
         TemperatureText = temperatureText;
         TooltipText = tooltipText;
+        AlertLevel = alertLevel;
 
         PushWriteHistory(writeBytesPerSec);
     }
@@ -157,7 +161,8 @@ public sealed class StorageRowViewModel : INotifyPropertyChanged
         double usedPercent,
         string usagePercentText,
         string capacityText,
-        string tooltipText)
+        string tooltipText,
+        AlertLevel alertLevel)
     {
         Kind = kind;
         DriveLetterText = driveLetterText;
@@ -167,9 +172,9 @@ public sealed class StorageRowViewModel : INotifyPropertyChanged
         HasCapacity = hasCapacity;
         UsagePercentText = usagePercentText;
         GaugeValue = hasCapacity ? Math.Clamp(usedPercent, 0.0, 100.0) : 0.0;
-        IsWarning = hasCapacity && usedPercent >= WarningThresholdPercent;
         CapacityText = capacityText;
         TooltipText = tooltipText;
+        AlertLevel = alertLevel;
     }
 
     /// <summary>書き込みレートを1点 push し、Sparkline 用のスナップショット配列を再生成する。

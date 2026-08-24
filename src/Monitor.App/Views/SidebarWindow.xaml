@@ -39,7 +39,7 @@
             <!-- CPU -->
             <controls:SectionExpander SectionKey="cpu" SectionTitle="CPU" AccentBrush="{StaticResource CpuAccentBrush}"
                                        SectionSummary="{Binding CpuSummary}" SectionSubtitle="{Binding CpuModelText}"
-                                       IsExpanded="{Binding IsCpuExpanded}"
+                                       IsExpanded="{Binding IsCpuExpanded}" AlertLevel="{Binding CpuAlertLevel}"
                                        Margin="12,0,12,0">
                 <StackPanel>
                     <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
@@ -57,7 +57,8 @@
                                         Margin="0,0,0,3" />
                     <TextBlock Text="{Binding CpuCoreCountText}" Style="{StaticResource SubTextStyle}" Margin="0,0,0,4" />
                     <UniformGrid Columns="2">
-                        <controls:StatRow Label="CPU 温度" Value="{Binding CpuTemperatureText}" Margin="0,0,6,0" />
+                        <controls:StatRow Label="CPU 温度" Value="{Binding CpuTemperatureText}" Margin="0,0,6,0"
+                                          ValueBrush="{Binding CpuTemperatureAlertLevel, Converter={StaticResource AlertLevelToBrushConverter}}" />
                         <controls:StatRow Label="パッケージ電力" Value="{Binding CpuPowerText}" />
                     </UniformGrid>
                 </StackPanel>
@@ -66,7 +67,7 @@
             <!-- GPU -->
             <controls:SectionExpander SectionKey="gpu" SectionTitle="GPU" AccentBrush="{StaticResource GpuAccentBrush}"
                                        SectionSummary="{Binding GpuSummary}" SectionSubtitle="{Binding GpuAdapterNameText}"
-                                       IsExpanded="{Binding IsGpuExpanded}"
+                                       IsExpanded="{Binding IsGpuExpanded}" AlertLevel="{Binding GpuAlertLevel}"
                                        Margin="12,0,12,0">
                 <StackPanel>
                     <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
@@ -119,7 +120,8 @@
                     <!-- 温度とホットスポット温度は1行に統合（"温度 / HS"）し、5項目→4項目にして
                          UniformGrid Columns=2 での行数を3行→2行に減らす。 -->
                     <UniformGrid Columns="2" Margin="0,0,0,4">
-                        <controls:StatRow Label="温度 / HS" Value="{Binding GpuTemperatureHotspotText}" Margin="0,0,6,0" />
+                        <controls:StatRow Label="温度 / HS" Value="{Binding GpuTemperatureHotspotText}" Margin="0,0,6,0"
+                                          ValueBrush="{Binding GpuTemperatureAlertLevel, Converter={StaticResource AlertLevelToBrushConverter}}" />
                         <controls:StatRow Label="ファン" Value="{Binding GpuFanText}" />
                         <controls:StatRow Label="消費電力" Value="{Binding GpuPowerText}" Margin="0,0,6,0" />
                         <controls:StatRow Label="メモリクロック" Value="{Binding GpuMemoryClockText}" />
@@ -140,6 +142,7 @@
             <!-- メモリ -->
             <controls:SectionExpander SectionKey="memory" SectionTitle="メモリ" AccentBrush="{StaticResource MemAccentBrush}"
                                        SectionSummary="{Binding MemorySummary}" IsExpanded="{Binding IsMemoryExpanded}"
+                                       AlertLevel="{Binding MemoryAlertLevel}"
                                        Margin="12,0,12,0">
                 <StackPanel>
                     <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
@@ -185,7 +188,8 @@
                         <controls:StatRow Label="プール" Value="{Binding MemoryPoolText}" Margin="0,0,6,0"
                                           ToolTip="ページプール / 非ページプール" />
                         <controls:StatRow Label="コミット" Value="{Binding MemoryCommitText}"
-                                          ToolTip="{Binding MemoryCommitTooltipText}" />
+                                          ToolTip="{Binding MemoryCommitTooltipText}"
+                                          ValueBrush="{Binding MemoryCommitAlertLevel, Converter={StaticResource AlertLevelToBrushConverter}}" />
                     </UniformGrid>
 
                     <TextBlock Text="{Binding MemoryHardwareReservedText}" Style="{StaticResource TinyLabelStyle}" Margin="0,3,0,4"
@@ -250,6 +254,7 @@
             <!-- ストレージ（物理ディスク＋論理ドライブ統合。1ドライブ=1行） -->
             <controls:SectionExpander SectionKey="storage" SectionTitle="ストレージ" AccentBrush="{StaticResource DiskAccentBrush}"
                                        SectionSummary="{Binding StorageSummary}" IsExpanded="{Binding IsStorageExpanded}"
+                                       AlertLevel="{Binding StorageAlertLevel}"
                                        Margin="12,0,12,0">
                 <StackPanel>
                     <!-- Property 要素（StackPanel.Resources）は子要素の先頭または末尾でなければ
@@ -309,7 +314,8 @@
                                         <TextBlock Grid.Column="3" Text="{Binding WriteText}" Style="{StaticResource ProcessValueStyle}" Margin="0,0,6,0"
                                                    Foreground="{StaticResource DiskWriteAccentBrush}" />
                                         <TextBlock Grid.Column="4" Text="{Binding BusyPercentText}" Style="{StaticResource ProcessValueStyle}" Margin="0,0,6,0" />
-                                        <TextBlock Grid.Column="5" Text="{Binding TemperatureText}" Style="{StaticResource ProcessValueStyle}" />
+                                        <TextBlock Grid.Column="5" Text="{Binding TemperatureText}" Style="{StaticResource ProcessValueStyle}"
+                                                   Foreground="{Binding AlertLevel, Converter={StaticResource AlertLevelToBrushConverter}}" />
                                     </Grid>
                                 </Grid>
                             </Border>
@@ -349,8 +355,10 @@
                                                         Style="{StaticResource StorageGaugeBarStyle}" VerticalAlignment="Center" Margin="0,0,6,0"
                                                         Visibility="{Binding HasCapacity, Converter={StaticResource BoolToVisibilityConverter}}" />
                                     <TextBlock Grid.Column="4" Text="{Binding UsagePercentText}" Style="{StaticResource ProcessValueStyle}" Margin="0,0,6,0"
-                                               Visibility="{Binding HasCapacity, Converter={StaticResource BoolToVisibilityConverter}}" />
-                                    <TextBlock Grid.Column="5" Text="{Binding CapacityText}" Style="{StaticResource ProcessValueStyle}" />
+                                               Visibility="{Binding HasCapacity, Converter={StaticResource BoolToVisibilityConverter}}"
+                                               Foreground="{Binding AlertLevel, Converter={StaticResource AlertLevelToBrushConverter}}" />
+                                    <TextBlock Grid.Column="5" Text="{Binding CapacityText}" Style="{StaticResource ProcessValueStyle}"
+                                               Foreground="{Binding AlertLevel, Converter={StaticResource AlertLevelToBrushConverter}}" />
                                 </Grid>
                             </Border>
                         </DataTemplate>
@@ -457,6 +465,7 @@
             <!-- 温度・ファン -->
             <controls:SectionExpander SectionKey="thermal" SectionTitle="温度・ファン" AccentBrush="{StaticResource ThermalAccentBrush}"
                                        SectionSummary="{Binding ThermalSummary}" IsExpanded="{Binding IsThermalExpanded}"
+                                       AlertLevel="{Binding ThermalAlertLevel}"
                                        Margin="12,0,12,0">
                 <StackPanel>
 

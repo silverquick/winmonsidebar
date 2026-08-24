@@ -1,11 +1,13 @@
 <ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
                     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
                     xmlns:conv="clr-namespace:Monitor.App.Converters"
-                    xmlns:controls="clr-namespace:Monitor.App.Controls">
+                    xmlns:controls="clr-namespace:Monitor.App.Controls"
+                    xmlns:alerts="clr-namespace:Monitor.Core.Alerts;assembly=Monitor.Core">
 
     <!-- ===== コンバータ ===== -->
     <BooleanToVisibilityConverter x:Key="BoolToVisibilityConverter" />
     <conv:InverseBooleanToVisibilityConverter x:Key="InverseBoolToVisibilityConverter" />
+    <conv:AlertLevelToBrushConverter x:Key="AlertLevelToBrushConverter" />
 
     <!-- ===== ベースカラー ===== -->
     <!-- Acrylic/DWM backdrop の上に重ねる半透明背景。 -->
@@ -34,8 +36,18 @@
     <SolidColorBrush x:Key="ThermalAccentBrush" Color="#E0623A" />
     <SolidColorBrush x:Key="ThermalFillBrush" Color="#3AE0623A" />
 
-    <!-- 警告色（ドライブ使用率90%以上など）。 -->
-    <SolidColorBrush x:Key="WarningBrush" Color="#F05A8C" />
+    <!-- 警告色。段階は 注意(Caution) / 危険(Critical) の2値（Monitor.Core.Alerts.AlertLevel 準拠）。
+         旧 WarningBrush(#F05A8C) は DiskWriteAccentBrush と全く同じ色で「書き込み量」と「警告」が
+         衝突していたため廃止し、以下の2色に分離する。
+         注意 = 琥珀/金色系。既存の DiskAccentBrush(#F0A63A, Hue≈36°) と ThermalAccentBrush(#E0623A, Hue≈15°)
+           がどちらも「燃えたオレンジ」寄りの色相なので、そこに埋没しないよう G 成分を大きく持ち上げて
+           Hue≈45°の黄金色寄りにした。3px の細いアクセントバーでも「セクション本来のオレンジ」と
+           「注意状態」が別の色だと分かる差になっている。
+         危険 = 彩度の高い赤。DiskWriteAccentBrush/NetAccentBrush(#F05A8C, マゼンタ寄りピンク)とは
+           B 成分を大きく下げることで明確に区別し、ThermalAccentBrush(#E0623A)とは G 成分の差で
+           区別できる値にした。 -->
+    <SolidColorBrush x:Key="AlertCautionBrush" Color="#F0C23C" />
+    <SolidColorBrush x:Key="AlertCriticalBrush" Color="#F04A4A" />
 
     <!-- ===== メモリ積み上げバー（Task Manager の「メモリ構成」相当）用の色 ===== -->
     <SolidColorBrush x:Key="MemModifiedBrush" Color="#F0A63A" />
@@ -186,12 +198,17 @@
         <Setter Property="Margin" Value="16,4,16,4" />
     </Style>
 
-    <!-- ===== ストレージ一覧の使用率バー。90%以上は警告色に切り替える ===== -->
+    <!-- ===== ストレージ一覧の使用率バー =====
+         StorageRowViewModel.AlertLevel（Monitor.Core.Alerts.AlertEvaluator.DriveCapacity /
+         NetworkDriveDisconnected 由来）に応じて、注意と危険で色を分ける。 -->
     <Style x:Key="StorageGaugeBarStyle" TargetType="controls:GaugeBar">
         <Setter Property="Foreground" Value="{StaticResource DiskAccentBrush}" />
         <Style.Triggers>
-            <DataTrigger Binding="{Binding IsWarning}" Value="True">
-                <Setter Property="Foreground" Value="{StaticResource WarningBrush}" />
+            <DataTrigger Binding="{Binding AlertLevel}" Value="{x:Static alerts:AlertLevel.Caution}">
+                <Setter Property="Foreground" Value="{StaticResource AlertCautionBrush}" />
+            </DataTrigger>
+            <DataTrigger Binding="{Binding AlertLevel}" Value="{x:Static alerts:AlertLevel.Critical}">
+                <Setter Property="Foreground" Value="{StaticResource AlertCriticalBrush}" />
             </DataTrigger>
         </Style.Triggers>
     </Style>

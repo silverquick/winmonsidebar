@@ -3,6 +3,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Shapes;
+using Monitor.Core.Alerts;
 
 namespace Monitor.App.Controls;
 
@@ -17,6 +18,7 @@ namespace Monitor.App.Controls;
 [TemplatePart(Name = PartSummary, Type = typeof(TextBlock))]
 [TemplatePart(Name = PartSubtitle, Type = typeof(TextBlock))]
 [TemplatePart(Name = PartChevron, Type = typeof(Path))]
+[TemplatePart(Name = PartAccentBar, Type = typeof(Rectangle))]
 public sealed class SectionExpander : HeaderedContentControl
 {
     private const string PartHeader = "PART_Header";
@@ -24,6 +26,7 @@ public sealed class SectionExpander : HeaderedContentControl
     private const string PartSummary = "PART_Summary";
     private const string PartSubtitle = "PART_Subtitle";
     private const string PartChevron = "PART_Chevron";
+    private const string PartAccentBar = "PART_AccentBar";
 
     // 10x10 のビューポート内に描く三角形のシェブロン。フォント絵文字は使わない。
     private static readonly Geometry ChevronDownGeometry = CreateFrozenGeometry("M 2,3.5 L 8,3.5 L 5,8 Z");
@@ -63,6 +66,16 @@ public sealed class SectionExpander : HeaderedContentControl
         typeof(Brush),
         typeof(SectionExpander),
         new FrameworkPropertyMetadata(DefaultAccentBrush));
+
+    /// <summary>警告レベル。既定は <see cref="AlertLevel.None"/>（正常）。
+    /// テンプレートの ControlTemplate.Triggers（BuildTemplate 内）が、この値に応じてアクセントバー
+    /// （<see cref="PartAccentBar"/>）の色と、折りたたみ時の <see cref="SectionSummary"/> の文字色を
+    /// 警告色へ切り替える。既存要素の色を変えるだけなので高さは1pxも増えない。</summary>
+    public static readonly DependencyProperty AlertLevelProperty = DependencyProperty.Register(
+        nameof(AlertLevel),
+        typeof(AlertLevel),
+        typeof(SectionExpander),
+        new FrameworkPropertyMetadata(AlertLevel.None));
 
     public static readonly DependencyProperty SectionKeyProperty = DependencyProperty.Register(
         nameof(SectionKey),
@@ -119,6 +132,15 @@ public sealed class SectionExpander : HeaderedContentControl
     {
         get => (Brush)GetValue(AccentBrushProperty);
         set => SetValue(AccentBrushProperty, value);
+    }
+
+    /// <summary>警告レベル。<see cref="AlertLevel.None"/>（既定）ならアクセントバーは <see cref="AccentBrush"/>
+    /// のまま。<see cref="AlertLevel.Caution"/> / <see cref="AlertLevel.Critical"/> ならアクセントバーと
+    /// 折りたたみ時の要約テキストの色が警告色に切り替わる。</summary>
+    public AlertLevel AlertLevel
+    {
+        get => (AlertLevel)GetValue(AlertLevelProperty);
+        set => SetValue(AlertLevelProperty, value);
     }
 
     /// <summary>設定（ExpandedSections）に保存するときのキー（"cpu" など）。永続化そのものは呼び出し側が行う。</summary>
@@ -235,6 +257,10 @@ public sealed class SectionExpander : HeaderedContentControl
         headerGrid.AppendChild(colChevron);
 
         FrameworkElementFactory accentBar = new(typeof(Rectangle));
+        // 警告レベルに応じてこのバーの色を切り替えるため、トリガーの TargetName で参照できるように名前を付ける
+        // （下の ControlTemplate.Triggers 参照）。折りたたんでいてもこのバーは表示され続けるので、
+        // 警告表示を高さゼロコストで実現できる。
+        accentBar.Name = PartAccentBar;
         accentBar.SetValue(Grid.ColumnProperty, 0);
         accentBar.SetValue(FrameworkElement.MarginProperty, new Thickness(0, 1, 8, 1));
         accentBar.SetValue(FrameworkElement.VerticalAlignmentProperty, VerticalAlignment.Stretch);
@@ -321,8 +347,36 @@ public sealed class SectionExpander : HeaderedContentControl
         hoverTrigger.Setters.Add(hoverSetter);
         template.Triggers.Add(hoverTrigger);
 
+        // 警告レベルのトリガー。正常(None)時は何もせず AccentBrush / SectionSummaryStyle の色のままにする。
+        // Caution/Critical のときだけ、アクセントバーの Fill と（折りたたみ時に見える）要約テキストの
+        // Foreground を警告色へ差し替える。新しい要素は増やさず、既存2要素の色を変えるだけなので
+        // レイアウトの高さは変わらない。展開時に出る SectionSubtitle（型番などの副題）は対象外。
+        template.Triggers.Add(CreateAlertTrigger(AlertLevel.Caution, "AlertCautionBrush"));
+        template.Triggers.Add(CreateAlertTrigger(AlertLevel.Critical, "AlertCriticalBrush"));
+
         template.Seal();
         return template;
+    }
+
+    /// <summary>AlertLevel が指定値のときにアクセントバーと要約テキストの色を差し替えるトリガーを作る。</summary>
+    private static Trigger CreateAlertTrigger(AlertLevel level, string brushResourceKey)
+    {
+        Trigger trigger = new()
+        {
+            Property = AlertLevelProperty,
+            Value = level,
+        };
+
+        trigger.Setters.Add(new Setter(Shape.FillProperty, new DynamicResourceExtension(brushResourceKey))
+        {
+            TargetName = PartAccentBar,
+        });
+        trigger.Setters.Add(new Setter(TextBlock.ForegroundProperty, new DynamicResourceExtension(brushResourceKey))
+        {
+            TargetName = PartSummary,
+        });
+
+        return trigger;
     }
 
     private static Geometry CreateFrozenGeometry(string pathData)

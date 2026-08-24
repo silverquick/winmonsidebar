@@ -6,6 +6,7 @@ using System.Runtime.CompilerServices;
 using System.Windows.Threading;
 using Monitor.App.Settings;
 using Monitor.Core;
+using Monitor.Core.Alerts;
 using Monitor.Core.Formatting;
 using Monitor.Core.Models;
 
@@ -162,6 +163,14 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
     private string _cpuPowerText = "—";
     public string CpuPowerText { get => _cpuPowerText; private set => SetProperty(ref _cpuPowerText, value); }
 
+    // CPU 温度の警告レベル。このセクションで判定している警告はこれ1つだけなので、
+    // 値用（CpuTemperatureAlertLevel）とセクション見出し用（CpuAlertLevel）は常に同じ値になる。
+    private AlertLevel _cpuTemperatureAlertLevel;
+    public AlertLevel CpuTemperatureAlertLevel { get => _cpuTemperatureAlertLevel; private set => SetProperty(ref _cpuTemperatureAlertLevel, value); }
+
+    private AlertLevel _cpuAlertLevel;
+    public AlertLevel CpuAlertLevel { get => _cpuAlertLevel; private set => SetProperty(ref _cpuAlertLevel, value); }
+
     // ----- GPU -----
     private string _gpuAdapterNameText = string.Empty;
     public string GpuAdapterNameText { get => _gpuAdapterNameText; private set => SetProperty(ref _gpuAdapterNameText, value); }
@@ -212,6 +221,15 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
     private float[] _gpuTemperatureSparkline = Array.Empty<float>();
     public float[] GpuTemperatureSparkline { get => _gpuTemperatureSparkline; private set => SetProperty(ref _gpuTemperatureSparkline, value); }
 
+    // GPU 温度の警告レベル。GpuTemperatureHotspotText はコア温度とホットスポット温度を1行に統合しているため、
+    // 値用のレベルもコア/ホットスポットそれぞれの判定の高い方にする。このセクションで判定している警告は
+    // この2つだけなので、セクション見出し用（GpuAlertLevel）も同じ値になる。
+    private AlertLevel _gpuTemperatureAlertLevel;
+    public AlertLevel GpuTemperatureAlertLevel { get => _gpuTemperatureAlertLevel; private set => SetProperty(ref _gpuTemperatureAlertLevel, value); }
+
+    private AlertLevel _gpuAlertLevel;
+    public AlertLevel GpuAlertLevel { get => _gpuAlertLevel; private set => SetProperty(ref _gpuAlertLevel, value); }
+
     // ----- メモリ -----
     private string _memoryUsageText = string.Empty;
     public string MemoryUsageText { get => _memoryUsageText; private set => SetProperty(ref _memoryUsageText, value); }
@@ -258,6 +276,14 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
     private string _memoryCommitText = string.Empty;
     public string MemoryCommitText { get => _memoryCommitText; private set => SetProperty(ref _memoryCommitText, value); }
 
+    // メモリコミットの警告レベル。このセクションで判定している警告はこれ1つだけなので、
+    // 値用（MemoryCommitAlertLevel）とセクション見出し用（MemoryAlertLevel）は常に同じ値になる。
+    private AlertLevel _memoryCommitAlertLevel;
+    public AlertLevel MemoryCommitAlertLevel { get => _memoryCommitAlertLevel; private set => SetProperty(ref _memoryCommitAlertLevel, value); }
+
+    private AlertLevel _memoryAlertLevel;
+    public AlertLevel MemoryAlertLevel { get => _memoryAlertLevel; private set => SetProperty(ref _memoryAlertLevel, value); }
+
     // コミットピークは専用行を持たず、「コミット」行の ToolTip に内訳として表示する
     // （情報は削らず、UI 上の占有面積だけ減らす）。
     private string _memoryCommitTooltipText = string.Empty;
@@ -295,6 +321,11 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
 
     private float[] _diskWriteSparkline = Array.Empty<float>();
     public float[] DiskWriteSparkline { get => _diskWriteSparkline; private set => SetProperty(ref _diskWriteSparkline, value); }
+
+    // ストレージセクション見出しの集約警告レベル。全 StorageRows（ディスク見出し行・ボリューム行・
+    // ネットワーク行）が持つ AlertLevel の最大値（ApplyStorage で StorageRows 更新後に集計する）。
+    private AlertLevel _storageAlertLevel;
+    public AlertLevel StorageAlertLevel { get => _storageAlertLevel; private set => SetProperty(ref _storageAlertLevel, value); }
 
     // ----- ネットワーク -----
     private string _networkNicName = string.Empty;
@@ -344,6 +375,10 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
     private IReadOnlyList<SensorRowViewModel> _thermalFans = Array.Empty<SensorRowViewModel>();
     public IReadOnlyList<SensorRowViewModel> ThermalFans { get => _thermalFans; private set => SetProperty(ref _thermalFans, value); }
 
+    // 冷却異常の警告レベル。このセクションには専用の値テキストが無く、セクション見出しにのみ反映する。
+    private AlertLevel _thermalAlertLevel;
+    public AlertLevel ThermalAlertLevel { get => _thermalAlertLevel; private set => SetProperty(ref _thermalAlertLevel, value); }
+
     private void OnSnapshotAvailable(MetricsSnapshot snapshot)
     {
         // MetricsHub のサンプリングループ（バックグラウンドスレッド）から呼ばれるため、
@@ -390,6 +425,9 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
         CpuTemperatureText = ByteFormatter.Temperature(packageTemp);
         CpuPowerText = ByteFormatter.Watts(packagePower);
 
+        CpuTemperatureAlertLevel = AlertEvaluator.CpuTemperature(packageTemp);
+        CpuAlertLevel = CpuTemperatureAlertLevel;
+
         var summaryParts = new List<string>(3) { CpuUsageText };
         if (effectiveClock > 0)
         {
@@ -431,6 +469,11 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
             : 0.0;
 
         GpuTemperatureSparkline = _hub.History.Snapshot(MetricSeries.GpuTemperature);
+
+        AlertLevel gpuCoreLevel = AlertEvaluator.GpuCoreTemperature(adapter.TemperatureC);
+        AlertLevel gpuHotspotLevel = AlertEvaluator.GpuHotspotTemperature(adapter.HotspotTemperatureC);
+        GpuTemperatureAlertLevel = MaxLevel(gpuCoreLevel, gpuHotspotLevel);
+        GpuAlertLevel = GpuTemperatureAlertLevel;
 
         var summaryParts = new List<string>(3) { GpuUsageText };
         if (adapter.TemperatureC is double summaryTemp)
@@ -475,6 +518,9 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
         MemoryCommitTooltipText = string.Create(
             CultureInfo.InvariantCulture,
             $"コミットピーク {ByteFormatter.Bytes(memory.CommitPeakBytes)}");
+
+        MemoryCommitAlertLevel = AlertEvaluator.MemoryCommit(memory.CommittedBytes, memory.CommitLimitBytes);
+        MemoryAlertLevel = MemoryCommitAlertLevel;
 
         MemoryHandlesLine = string.Create(
             CultureInfo.InvariantCulture,
@@ -657,6 +703,16 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
 
         UpdateStorageRows(desiredKeys, applyActions);
 
+        // セクション見出しの集約警告レベル: 全行（ディスク見出し・ボリューム・ネットワーク）の最大。
+        // 各行の AlertLevel は UpdateStorageRows 実行後の StorageRows に反映済みなので、ここでまとめて読む。
+        AlertLevel storageAlertLevel = AlertLevel.None;
+        foreach (StorageRowViewModel row in StorageRows)
+        {
+            storageAlertLevel = MaxLevel(storageAlertLevel, row.AlertLevel);
+        }
+
+        StorageAlertLevel = storageAlertLevel;
+
         double overallPercent = totalCapacityBytes > 0 ? 100.0 * usedCapacityBytes / totalCapacityBytes : 0.0;
 
         StorageSummary = string.Create(
@@ -676,13 +732,18 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
         string temperatureText = ByteFormatter.Temperature(temperature);
         string tooltipText = BuildDiskTooltip(d);
         double writeBytesPerSec = d.WriteBytesPerSec;
+        AlertLevel alertLevel = AlertEvaluator.DiskTemperature(temperature, d.WarningTemperatureC, d.CriticalTemperatureC, d.IsSsd);
 
         return row => row.UpdateAsDisk(
-            modelText, busTypeText, readText, writeText, busyPercentText, temperatureText, writeBytesPerSec, tooltipText);
+            modelText, busTypeText, readText, writeText, busyPercentText, temperatureText, writeBytesPerSec, tooltipText, alertLevel);
     }
 
     /// <summary>ボリューム行/ネットワーク行1件分の更新アクションを組み立てる。列構成は共通なので
-    /// <paramref name="kind"/>（Volume / Network）だけで振る舞いを切り替える。</summary>
+    /// <paramref name="kind"/>（Volume / Network）だけで振る舞いを切り替える。
+    /// 警告判定もここで振り分ける: ローカルのボリューム行は空き容量（<see cref="AlertEvaluator.DriveCapacity"/>）、
+    /// ネットワーク行は切断（<see cref="AlertEvaluator.NetworkDriveDisconnected"/>）。ローカルドライブは
+    /// 空のカードリーダー等で IsReady=false になり得るため NetworkDriveDisconnected の対象にはしない
+    /// （<see cref="AlertEvaluator.NetworkDriveDisconnected"/> のドキュメント参照）。</summary>
     private static Action<StorageRowViewModel> BuildVolumeRowAction(VolumeSnapshot v, StorageRowKind kind)
     {
         string driveLetterText = v.DriveLetter;
@@ -695,9 +756,12 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
         double usedPercent = v.UsedPercent;
         string capacityText = hasCapacity ? ByteFormatter.BytesPair(v.UsedBytes, v.TotalBytes) : "—";
         string tooltipText = BuildVolumeTooltip(v);
+        AlertLevel alertLevel = kind == StorageRowKind.Network
+            ? AlertEvaluator.NetworkDriveDisconnected(v.IsReady)
+            : (hasCapacity ? AlertEvaluator.DriveCapacity(usedPercent, v.FreeBytes) : AlertLevel.None);
 
         return row => row.UpdateAsVolume(
-            kind, driveLetterText, labelText, isReady, hasCapacity, usedPercent, usagePercentText, capacityText, tooltipText);
+            kind, driveLetterText, labelText, isReady, hasCapacity, usedPercent, usagePercentText, capacityText, tooltipText, alertLevel);
     }
 
     /// <summary>
@@ -887,6 +951,8 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
         ThermalOtherTemperatures = BuildSensorRows(thermal.OtherTemperatures, v => ByteFormatter.Temperature(v));
         ThermalFans = BuildSensorRows(thermal.Fans, v => ByteFormatter.Rpm((int)Math.Round(v)));
 
+        ThermalAlertLevel = AlertEvaluator.CoolingFault(thermal.CpuPackageTemperatureC, thermal.MotherboardTemperatureC, thermal.Fans);
+
         if (!thermal.IsElevated)
         {
             ThermalSummary = "管理者権限が必要";
@@ -1018,6 +1084,10 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
     }
 
     private static string FormatClockOrDash(double? mhz) => mhz is double v && v > 0 ? ByteFormatter.Clock(v) : "—";
+
+    /// <summary>2つの <see cref="AlertLevel"/> のうち高い方を返す。列挙値は None &lt; Caution &lt; Critical の
+    /// 深刻度順に並んでいるため、素直な比較で「高い方」を判定できる。</summary>
+    private static AlertLevel MaxLevel(AlertLevel a, AlertLevel b) => a >= b ? a : b;
 
     /// <summary>GPU コア温度とホットスポット温度を "62 / 71 °C" のように1つのStatRowへ統合する。
     /// 単位は末尾に1回だけ付ける。片方だけ取得できない場合は
