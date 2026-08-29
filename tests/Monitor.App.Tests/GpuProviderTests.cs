@@ -82,16 +82,27 @@ public sealed class GpuProviderTests
     }
 
     [TestMethod]
-    public void Constructor_WithInstance_PreservesInstanceAndDisposes()
+    public void Constructor_WithNull_ResolvesUnambiguouslyAndOperatesGracefully()
     {
-        var fakeSensors = new FakeGpuVendorSensors();
-        var provider = new GpuProvider(fakeSensors);
+        var provider = new GpuProvider(null);
 
         provider.Initialize();
-        Assert.IsFalse(fakeSensors.IsDisposed);
+        GpuSnapshot snapshot = provider.Sample(TimeSpan.FromSeconds(1));
+        Assert.IsNotNull(snapshot);
 
         provider.Dispose();
-        Assert.IsTrue(fakeSensors.IsDisposed);
+    }
+
+    [TestMethod]
+    public void Constructor_Parameterless_ResolvesUnambiguouslyAndOperatesGracefully()
+    {
+        var provider = new GpuProvider();
+
+        provider.Initialize();
+        GpuSnapshot snapshot = provider.Sample(TimeSpan.FromSeconds(1));
+        Assert.IsNotNull(snapshot);
+
+        provider.Dispose();
     }
 
     private sealed class FakeGpuVendorSensors : IGpuVendorSensors

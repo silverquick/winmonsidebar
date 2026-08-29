@@ -34,14 +34,6 @@ public sealed class GpuProvider : IMetricProvider<GpuSnapshot>
         _vendorSensorsFactory = vendorSensorsFactory;
     }
 
-    /// <summary>
-    /// 既存の <see cref="IGpuVendorSensors"/> インスタンスを直接受け取るコンストラクタ（テスト等向け）。
-    /// </summary>
-    public GpuProvider(IGpuVendorSensors? vendorSensors)
-    {
-        _vendorSensors = vendorSensors;
-    }
-
     public string Name => "GPU";
 
     public bool IsAvailable { get; private set; }
