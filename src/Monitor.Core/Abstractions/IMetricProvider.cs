@@ -27,6 +27,13 @@ public interface IMetricProvider<T> : IDisposable
     T Sample(TimeSpan elapsed);
 }
 
+/// <summary>概要値と詳細値を別コストで取得できるプロバイダの任意拡張。
+/// UI は表示状態をこの契約経由で通知し、Core は具体的な UI 型へ依存しない。</summary>
+public interface IDetailSamplingProvider
+{
+    void SetDetailSamplingEnabled(bool enabled);
+}
+
 /// <summary>
 /// 温度・ファン・電力など、ハードウェア/権限に依存して取れたり取れなかったりするセンサー群。
 /// 実装を差し替え可能にするための境界（現状は LibreHardwareMonitor 実装のみ）。

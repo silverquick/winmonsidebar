@@ -4,10 +4,7 @@ public sealed record ProcessInfo(
     int Pid,
     string Name,
     double CpuPercent,
-    ulong WorkingSetBytes,
-    double DiskBytesPerSec,
-    double GpuPercent,
-    string? ExecutablePath);
+    ulong WorkingSetBytes);
 
 public readonly record struct ProcessSnapshot(IReadOnlyList<ProcessInfo> Processes)
 {

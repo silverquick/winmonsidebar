@@ -134,6 +134,7 @@ public sealed partial class VolumeProvider : IMetricProvider<IReadOnlyList<Volum
         }
 
         var pending = new List<Task<VolumeSnapshot>>(driveNames.Length);
+        DateTime lastPublishUtc = DateTime.MinValue;
         foreach (string driveName in driveNames)
         {
             pending.Add(Task.Run(() => ReadVolumeSafe(driveName), token));
@@ -153,13 +154,19 @@ public sealed partial class VolumeProvider : IMetricProvider<IReadOnlyList<Volum
             {
                 VolumeSnapshot snapshot = await completed.ConfigureAwait(false);
                 working[snapshot.DriveLetter] = snapshot;
-                _cache = working.Values.OrderBy(v => v.DriveLetter, StringComparer.Ordinal).ToArray();
+                if (DateTime.UtcNow - lastPublishUtc >= TimeSpan.FromMilliseconds(500))
+                {
+                    _cache = working.Values.OrderBy(v => v.DriveLetter, StringComparer.Ordinal).ToArray();
+                    lastPublishUtc = DateTime.UtcNow;
+                }
             }
             catch
             {
                 // ReadVolumeSafe never throws, but guard defensively; skip this drive for this round.
             }
         }
+
+        _cache = working.Values.OrderBy(v => v.DriveLetter, StringComparer.Ordinal).ToArray();
     }
 
     /// <summary>Reads everything for one drive letter. Every failure path returns a non-null snapshot

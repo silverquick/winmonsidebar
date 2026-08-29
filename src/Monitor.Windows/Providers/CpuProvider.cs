@@ -13,7 +13,7 @@ namespace Monitor.Windows.Providers;
 /// PackageTemperatureC / PackagePowerWatts はこのプロバイダの範囲外（常に null）。
 /// LibreHardwareMonitor 側のプロバイダが埋め、MetricsHub/ViewModel 層で合成する。
 /// </summary>
-public sealed partial class CpuProvider : IMetricProvider<CpuSnapshot>
+public sealed partial class CpuProvider : IMetricProvider<CpuSnapshot>, IDetailSamplingProvider
 {
     private const string PerCoreCounterPath = @"\Processor Information(*)\% Processor Time";
     private const string PerCoreClockCounterPath = @"\Processor Information(*)\% Processor Performance";
@@ -35,10 +35,14 @@ public sealed partial class CpuProvider : IMetricProvider<CpuSnapshot>
     private double _baseClockMhz;
     private string _modelName = "";
     private int _physicalCoreCount;
+    private int _detailSamplingEnabled = 1;
 
     public string Name => "CPU";
 
     public bool IsAvailable { get; private set; }
+
+    public void SetDetailSamplingEnabled(bool enabled) =>
+        Volatile.Write(ref _detailSamplingEnabled, enabled ? 1 : 0);
 
     public void Initialize()
     {
@@ -77,8 +81,21 @@ public sealed partial class CpuProvider : IMetricProvider<CpuSnapshot>
         try
         {
             double totalUsagePercent = SampleTotalUsagePercent();
-            IReadOnlyList<double> perCoreUsagePercent = SamplePerCoreUsagePercent();
-            IReadOnlyList<double> perCoreClockMhz = SamplePerCoreClockMhz();
+            bool includeDetails = Volatile.Read(ref _detailSamplingEnabled) != 0;
+            IReadOnlyList<double> perCoreUsagePercent;
+            IReadOnlyList<double> perCoreClockMhz;
+            if (includeDetails)
+            {
+                perCoreUsagePercent = SamplePerCoreUsagePercent();
+                perCoreClockMhz = SamplePerCoreClockMhz();
+            }
+            else
+            {
+                // 現在クロックの単一カウンターを更新するためだけに1回 Collect する。
+                _pdhQuery?.Collect();
+                perCoreUsagePercent = Array.Empty<double>();
+                perCoreClockMhz = Array.Empty<double>();
+            }
             double currentClockMhz = SampleCurrentClockMhz();
 
             return new CpuSnapshot

@@ -11,6 +11,9 @@ public sealed class Sparkline : FrameworkElement
     private static readonly Brush DefaultStrokeBrush = CreateFrozenSolid(Color.FromRgb(0x4E, 0xC9, 0xF5));
     private static readonly Brush DefaultFillBrush = CreateDefaultFillBrush();
     private static readonly Pen GridLinePen = CreateFrozenPen(Color.FromArgb(0x1A, 0xFF, 0xFF, 0xFF), 1.0);
+    private Brush? _cachedStrokeBrush;
+    private double _cachedStrokeThickness;
+    private Pen? _cachedStrokePen;
 
     public static readonly DependencyProperty ValuesProperty = DependencyProperty.Register(
         nameof(Values),
@@ -142,50 +145,51 @@ public sealed class Sparkline : FrameworkElement
         int count = values.Length;
         double stepX = width / (count - 1);
 
-        Point[] points = new Point[count];
-        for (int i = 0; i < count; i++)
-        {
-            double normalized = (values[i] - min) / range;
-            normalized = Math.Clamp(normalized, 0.0, 1.0);
-            double x = i * stepX;
-            double y = height - normalized * height;
-            points[i] = new Point(x, y);
-        }
-
         StreamGeometry fillGeometry = new();
-        using (StreamGeometryContext ctx = fillGeometry.Open())
+        StreamGeometry strokeGeometry = new();
+        using (StreamGeometryContext fill = fillGeometry.Open())
+        using (StreamGeometryContext stroke = strokeGeometry.Open())
         {
-            ctx.BeginFigure(new Point(points[0].X, height), isFilled: true, isClosed: true);
-            ctx.LineTo(points[0], isStroked: false, isSmoothJoin: false);
+            Point first = ToPoint(0);
+            fill.BeginFigure(new Point(first.X, height), isFilled: true, isClosed: true);
+            fill.LineTo(first, isStroked: false, isSmoothJoin: false);
+            stroke.BeginFigure(first, isFilled: false, isClosed: false);
+            Point last = first;
             for (int i = 1; i < count; i++)
             {
-                ctx.LineTo(points[i], isStroked: false, isSmoothJoin: false);
+                last = ToPoint(i);
+                fill.LineTo(last, isStroked: false, isSmoothJoin: false);
+                stroke.LineTo(last, isStroked: true, isSmoothJoin: true);
             }
+            fill.LineTo(new Point(last.X, height), isStroked: false, isSmoothJoin: false);
 
-            ctx.LineTo(new Point(points[count - 1].X, height), isStroked: false, isSmoothJoin: false);
+            Point ToPoint(int index)
+            {
+                double normalized = Math.Clamp((values[index] - min) / range, 0.0, 1.0);
+                return new Point(index * stepX, height - normalized * height);
+            }
         }
 
         fillGeometry.Freeze();
         dc.DrawGeometry(Fill, null, fillGeometry);
 
-        StreamGeometry strokeGeometry = new();
-        using (StreamGeometryContext ctx = strokeGeometry.Open())
-        {
-            ctx.BeginFigure(points[0], isFilled: false, isClosed: false);
-            for (int i = 1; i < count; i++)
-            {
-                ctx.LineTo(points[i], isStroked: true, isSmoothJoin: true);
-            }
-        }
-
         strokeGeometry.Freeze();
-        Pen strokePen = new(Stroke, StrokeThickness);
-        if (strokePen.CanFreeze)
+        dc.DrawGeometry(null, GetStrokePen(), strokeGeometry);
+    }
+
+    private Pen GetStrokePen()
+    {
+        if (_cachedStrokePen is not null && ReferenceEquals(_cachedStrokeBrush, Stroke) && _cachedStrokeThickness == StrokeThickness)
         {
-            strokePen.Freeze();
+            return _cachedStrokePen;
         }
 
-        dc.DrawGeometry(null, strokePen, strokeGeometry);
+        var pen = new Pen(Stroke, StrokeThickness);
+        if (pen.CanFreeze) pen.Freeze();
+        _cachedStrokeBrush = Stroke;
+        _cachedStrokeThickness = StrokeThickness;
+        _cachedStrokePen = pen;
+        return pen;
     }
 
     private static void DrawGridLine(DrawingContext dc, double y, double width)

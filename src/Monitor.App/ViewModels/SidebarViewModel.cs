@@ -13,9 +13,8 @@ using Monitor.Core.Models;
 namespace Monitor.App.ViewModels;
 
 /// <summary>
-/// サイドバー全体の表示状態。<see cref="MetricsHub.SnapshotAvailable"/> はバックグラウンドスレッドで
-/// 発火するため、<see cref="Dispatcher.BeginInvoke(System.Delegate)"/> で UI スレッドへマーシャリングしてから
-/// プロパティを更新する。
+/// サイドバー全体の表示状態。UI スレッドのタイマーから最新スナップショットだけを反映するため、
+/// UI が一時的に詰まっても古い更新が Dispatcher キューに蓄積しない。
 /// </summary>
 public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
 {
@@ -25,6 +24,11 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
     private readonly AppSettings _settings;
     private readonly int _topProcessCount;
     private bool _disposed;
+    private DateTimeOffset _lastAppliedSnapshotTimestamp = DateTimeOffset.UnixEpoch;
+    private IReadOnlyList<MemoryModuleInfo>? _lastMemoryModules;
+    private IReadOnlyList<PageFileInfo>? _lastPageFiles;
+    private ThermalSnapshot? _lastThermal;
+    private IReadOnlyList<ProcessInfo>? _lastProcesses;
 
     public SidebarViewModel(MetricsHub hub, Dispatcher dispatcher, AppSettings settings)
     {
@@ -38,6 +42,7 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
 
         // 展開状態を設定から復元する。setter を経由すると保存を誘発するため、フィールドへ直接代入する。
         _isCpuExpanded = GetExpanded("cpu");
+        _hub.SetCpuDetailSamplingEnabled(_isCpuExpanded);
         _isGpuExpanded = GetExpanded("gpu");
         _isMemoryExpanded = GetExpanded("memory");
         _isMemoryModulesExpanded = GetExpanded("memory-modules", defaultValue: false);
@@ -46,22 +51,26 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
         _isNetworkAllExpanded = GetExpanded("network-all", defaultValue: false);
         _isThermalExpanded = GetExpanded("thermal");
         _isProcessExpanded = GetExpanded("process");
+        _hub.SetProcessSamplingEnabled(_isProcessExpanded);
 
         ProcessSummary = string.Create(CultureInfo.InvariantCulture, $"上位 {_topProcessCount} 件");
-
-        _hub.SnapshotAvailable += OnSnapshotAvailable;
 
         _clockTimer = new DispatcherTimer(DispatcherPriority.Background)
         {
             Interval = TimeSpan.FromSeconds(1),
         };
-        _clockTimer.Tick += (_, _) => HeaderTime = DateTime.Now.ToString("HH:mm:ss");
+        _clockTimer.Tick += (_, _) =>
+        {
+            HeaderTime = DateTime.Now.ToString("HH:mm:ss");
+            ApplyLatestSnapshot();
+        };
         _clockTimer.Start();
         HeaderTime = DateTime.Now.ToString("HH:mm:ss");
 
         if (_hub.Latest is MetricsSnapshot latest)
         {
             Apply(latest);
+            _lastAppliedSnapshotTimestamp = latest.Timestamp;
         }
     }
 
@@ -81,7 +90,20 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
 
     // ----- セクション展開状態（SettingsStore へ永続化） -----
     private bool _isCpuExpanded;
-    public bool IsCpuExpanded { get => _isCpuExpanded; set => SetExpanded("cpu", value, ref _isCpuExpanded); }
+    public bool IsCpuExpanded
+    {
+        get => _isCpuExpanded;
+        set
+        {
+            if (_isCpuExpanded == value)
+            {
+                return;
+            }
+
+            SetExpanded("cpu", value, ref _isCpuExpanded);
+            _hub.SetCpuDetailSamplingEnabled(value);
+        }
+    }
 
     private bool _isGpuExpanded;
     public bool IsGpuExpanded { get => _isGpuExpanded; set => SetExpanded("gpu", value, ref _isGpuExpanded); }
@@ -105,7 +127,27 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
     public bool IsThermalExpanded { get => _isThermalExpanded; set => SetExpanded("thermal", value, ref _isThermalExpanded); }
 
     private bool _isProcessExpanded;
-    public bool IsProcessExpanded { get => _isProcessExpanded; set => SetExpanded("process", value, ref _isProcessExpanded); }
+    public bool IsProcessExpanded
+    {
+        get => _isProcessExpanded;
+        set
+        {
+            if (_isProcessExpanded == value)
+            {
+                return;
+            }
+
+            SetExpanded("process", value, ref _isProcessExpanded);
+            _hub.SetProcessSamplingEnabled(value);
+
+            if (value)
+            {
+                IReadOnlyList<ProcessInfo> processes = _hub.Latest?.Processes.Processes ?? Array.Empty<ProcessInfo>();
+                UpdateProcesses(processes);
+                _lastProcesses = processes;
+            }
+        }
+    }
 
     // ----- セクション要約（折りたたみ時表示） -----
     private string _cpuSummary = string.Empty;
@@ -379,17 +421,14 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
     private AlertLevel _thermalAlertLevel;
     public AlertLevel ThermalAlertLevel { get => _thermalAlertLevel; private set => SetProperty(ref _thermalAlertLevel, value); }
 
-    private void OnSnapshotAvailable(MetricsSnapshot snapshot)
+    private void ApplyLatestSnapshot()
     {
-        // MetricsHub のサンプリングループ（バックグラウンドスレッド）から呼ばれるため、
-        // UI スレッドへマーシャリングしてから状態を反映する。
-        _dispatcher.BeginInvoke(new Action(() =>
+        MetricsSnapshot? latest = _hub.Latest;
+        if (latest is not null && latest.Timestamp != _lastAppliedSnapshotTimestamp)
         {
-            if (!_disposed)
-            {
-                Apply(snapshot);
-            }
-        }));
+            Apply(latest);
+            _lastAppliedSnapshotTimestamp = latest.Timestamp;
+        }
     }
 
     private void Apply(MetricsSnapshot s)
@@ -399,8 +438,32 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
         ApplyMemory(s.Memory);
         ApplyStorage(s.Disk, s.Volumes, s.Thermal);
         ApplyNetwork(s.Network);
-        ApplyThermal(s.Thermal);
-        UpdateProcesses(s.Processes.Processes);
+
+        // モジュール、ページファイル、温度、プロセスは低頻度プロバイダが返す同じリスト/インスタンスを
+        // fast tick にそのまま載せている。参照が変わった時だけ行 VM を作り直す。
+        if (!ReferenceEquals(s.Memory.Modules, _lastMemoryModules))
+        {
+            ApplyMemoryModules(s.Memory);
+            _lastMemoryModules = s.Memory.Modules;
+        }
+
+        if (!ReferenceEquals(s.Memory.PageFiles, _lastPageFiles))
+        {
+            PageFileRows = BuildPageFileRows(s.Memory.PageFiles);
+            _lastPageFiles = s.Memory.PageFiles;
+        }
+
+        if (!ReferenceEquals(s.Thermal, _lastThermal))
+        {
+            ApplyThermal(s.Thermal);
+            _lastThermal = s.Thermal;
+        }
+
+        if (IsProcessExpanded && !ReferenceEquals(s.Processes.Processes, _lastProcesses))
+        {
+            UpdateProcesses(s.Processes.Processes);
+            _lastProcesses = s.Processes.Processes;
+        }
     }
 
     private void ApplyCpu(CpuSnapshot cpu, ThermalSnapshot thermal)
@@ -535,15 +598,16 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
                 $"ハードウェア予約 {reservedMb:N0} MB");
         }
 
+        MemorySummary = string.Create(CultureInfo.InvariantCulture, $"{MemoryUsageText} · {MemoryUsagePercentText}");
+    }
+
+    private void ApplyMemoryModules(MemorySnapshot memory)
+    {
         MemorySlotSummaryText = BuildSlotSummary(memory);
         MemoryModules = BuildMemoryModules(memory.Modules);
         MemoryModulesSummary = memory.Modules.Count > 0
             ? string.Create(CultureInfo.InvariantCulture, $"{memory.Modules.Count} 本")
             : "—";
-
-        PageFileRows = BuildPageFileRows(memory.PageFiles);
-
-        MemorySummary = string.Create(CultureInfo.InvariantCulture, $"{MemoryUsageText} · {MemoryUsagePercentText}");
     }
 
     private static string BuildSlotSummary(MemorySnapshot memory)
@@ -1171,7 +1235,6 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
         }
 
         _disposed = true;
-        _hub.SnapshotAvailable -= OnSnapshotAvailable;
         _clockTimer.Stop();
     }
 

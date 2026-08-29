@@ -106,7 +106,7 @@ public partial class App : Application
             ThermalSnapshot t = snapshot.Thermal;
             if (!t.IsAvailable && snapshotsSeen < 5)
             {
-                // 最初の数回はまだ Thermal のサンプリング周期（SlowInterval）に入っていない可能性がある。
+                // 最初の数回はまだ Thermal のサンプリング周期に入っていない可能性がある。
                 return;
             }
 

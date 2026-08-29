@@ -10,6 +10,10 @@ public sealed class CoreGrid : FrameworkElement
 {
     private static readonly Brush DefaultLowBrush = CreateFrozenSolid(Color.FromRgb(0x2D, 0x7D, 0x46));
     private static readonly Brush DefaultHighBrush = CreateFrozenSolid(Color.FromRgb(0xE0, 0x3A, 0x3A));
+    private Color _paletteLow;
+    private Color _paletteHigh;
+    private Brush[]? _basePalette;
+    private Brush[]? _barPalette;
 
     public static readonly DependencyProperty ValuesProperty = DependencyProperty.Register(
         nameof(Values),
@@ -113,8 +117,7 @@ public sealed class CoreGrid : FrameworkElement
             return;
         }
 
-        Brush low = LowBrush;
-        Brush high = HighBrush;
+        (Brush[] basePalette, Brush[] barPalette) = GetPalettes();
 
         for (int i = 0; i < count; i++)
         {
@@ -126,23 +129,46 @@ public sealed class CoreGrid : FrameworkElement
 
             double value = Math.Clamp(values![i], 0.0, 100.0);
             double t = value / 100.0;
-            Color cellColor = Lerp(GetColor(low), GetColor(high), t);
+            int paletteIndex = (int)Math.Round(t * 100.0);
 
             Rect cellRect = new(x, y, cellWidth, cellHeight);
 
             // セル全体を淡い色で塗って土台にする。
-            Brush baseBrush = CreateFrozenSolid(Color.FromArgb(0x40, cellColor.R, cellColor.G, cellColor.B));
-            dc.DrawRectangle(baseBrush, null, cellRect);
+            dc.DrawRectangle(basePalette[paletteIndex], null, cellRect);
 
             // 使用率バーを下から上に伸ばして描く。
             double barHeight = cellHeight * t;
             if (barHeight > 0)
             {
                 Rect barRect = new(x, y + (cellHeight - barHeight), cellWidth, barHeight);
-                Brush barBrush = CreateFrozenSolid(cellColor);
-                dc.DrawRectangle(barBrush, null, barRect);
+                dc.DrawRectangle(barPalette[paletteIndex], null, barRect);
             }
         }
+    }
+
+    private (Brush[] Base, Brush[] Bar) GetPalettes()
+    {
+        Color low = GetColor(LowBrush);
+        Color high = GetColor(HighBrush);
+        if (_basePalette is not null && _barPalette is not null && low == _paletteLow && high == _paletteHigh)
+        {
+            return (_basePalette, _barPalette);
+        }
+
+        var bases = new Brush[101];
+        var bars = new Brush[101];
+        for (int i = 0; i <= 100; i++)
+        {
+            Color color = Lerp(low, high, i / 100.0);
+            bases[i] = CreateFrozenSolid(Color.FromArgb(0x40, color.R, color.G, color.B));
+            bars[i] = CreateFrozenSolid(color);
+        }
+
+        _paletteLow = low;
+        _paletteHigh = high;
+        _basePalette = bases;
+        _barPalette = bars;
+        return (bases, bars);
     }
 
     private int ResolveColumns(int count, double width, double height, double gap)

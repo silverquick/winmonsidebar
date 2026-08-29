@@ -10,7 +10,13 @@ public sealed class MetricsHubOptions
     public TimeSpan FastInterval { get; init; } = TimeSpan.FromSeconds(1);
 
     /// <summary>プロセス一覧をサンプリングする間隔。</summary>
-    public TimeSpan SlowInterval { get; init; } = TimeSpan.FromSeconds(2);
+    public TimeSpan ProcessInterval { get; init; } = TimeSpan.FromSeconds(2);
+
+    /// <summary>温度・ファンをサンプリングする間隔。ハードウェア走査の負荷を抑える。</summary>
+    public TimeSpan ThermalInterval { get; init; } = TimeSpan.FromSeconds(5);
+
+    /// <summary>ボリュームのキャッシュを読み取る間隔。</summary>
+    public TimeSpan VolumeInterval { get; init; } = TimeSpan.FromSeconds(5);
 
     public int TopProcessCount { get; init; } = 8;
 }
@@ -34,6 +40,17 @@ public sealed class MetricsHub : IAsyncDisposable
     private CancellationTokenSource? _cts;
     private Task? _loopTask;
     private volatile MetricsSnapshot? _latest;
+    private int _processSamplingEnabled = 1;
+    private readonly IDetailSamplingProvider? _cpuDetails;
+    private readonly object _snapshotLock = new();
+    private CpuSnapshot _lastCpu = CpuSnapshot.Empty;
+    private MemorySnapshot _lastMemory = MemorySnapshot.Empty;
+    private DiskSnapshot _lastDisk = DiskSnapshot.Empty;
+    private NetworkSnapshot _lastNetwork = NetworkSnapshot.Empty;
+    private GpuSnapshot _lastGpu = GpuSnapshot.Empty;
+    private ProcessSnapshot _lastProcesses = ProcessSnapshot.Empty;
+    private ThermalSnapshot _lastThermal = ThermalSnapshot.Empty;
+    private IReadOnlyList<VolumeSnapshot> _lastVolumes = Array.Empty<VolumeSnapshot>();
 
     public MetricsHub(
         MetricsHubOptions options,
@@ -55,6 +72,7 @@ public sealed class MetricsHub : IAsyncDisposable
         _processes = processes;
         _thermal = thermal;
         _volumes = volumes;
+        _cpuDetails = cpu as IDetailSamplingProvider;
 
         History = new MetricsHistory();
     }
@@ -67,6 +85,14 @@ public sealed class MetricsHub : IAsyncDisposable
     public MetricsSnapshot? Latest => _latest;
 
     public MetricsHistory History { get; }
+
+    /// <summary>プロセス一覧の需要を通知する。非表示時は全プロセス走査を止める。</summary>
+    public void SetProcessSamplingEnabled(bool enabled) =>
+        Volatile.Write(ref _processSamplingEnabled, enabled ? 1 : 0);
+
+    /// <summary>CPU コア別値の需要を通知する。概要値の取得は継続する。</summary>
+    public void SetCpuDetailSamplingEnabled(bool enabled) =>
+        _cpuDetails?.SetDetailSamplingEnabled(enabled);
 
     public void Start()
     {
@@ -84,63 +110,136 @@ public sealed class MetricsHub : IAsyncDisposable
         // PDH の初期化などは遅い可能性があるため、UI スレッドをブロックしないようここで行う。
         InitializeAll();
 
-        var fastStopwatch = Stopwatch.StartNew();
-        var slowStopwatch = Stopwatch.StartNew();
-        ProcessSnapshot lastProcesses = ProcessSnapshot.Empty;
-        ThermalSnapshot lastThermal = ThermalSnapshot.Empty;
-        IReadOnlyList<VolumeSnapshot> lastVolumes = Array.Empty<VolumeSnapshot>();
-
-        using var timer = new PeriodicTimer(_options.FastInterval);
-
         try
         {
-            while (await timer.WaitForNextTickAsync(token).ConfigureAwait(false))
-            {
-                TimeSpan fastElapsed = fastStopwatch.Elapsed;
-                fastStopwatch.Restart();
-
-                CpuSnapshot cpu = SampleSafe(_cpu, fastElapsed, CpuSnapshot.Empty);
-                MemorySnapshot memory = SampleSafe(_memory, fastElapsed, MemorySnapshot.Empty);
-                DiskSnapshot disk = SampleSafe(_disk, fastElapsed, DiskSnapshot.Empty);
-                NetworkSnapshot network = SampleSafe(_network, fastElapsed, NetworkSnapshot.Empty);
-                GpuSnapshot gpu = SampleSafe(_gpu, fastElapsed, GpuSnapshot.Empty);
-
-                if (slowStopwatch.Elapsed >= _options.SlowInterval)
-                {
-                    TimeSpan slowElapsed = slowStopwatch.Elapsed;
-                    slowStopwatch.Restart();
-                    lastProcesses = SampleSafe(_processes, slowElapsed, lastProcesses);
-                    lastThermal = SampleSafe(_thermal, slowElapsed, lastThermal);
-                    lastVolumes = SampleSafe(_volumes, slowElapsed, lastVolumes);
-                }
-
-                var snapshot = new MetricsSnapshot(
-                    Timestamp: DateTimeOffset.UtcNow,
-                    Cpu: cpu,
-                    Memory: memory,
-                    Disk: disk,
-                    Network: network,
-                    Gpu: gpu,
-                    Processes: lastProcesses,
-                    Thermal: lastThermal,
-                    Volumes: lastVolumes);
-
-                _latest = snapshot;
-                History.Append(snapshot);
-
-                try
-                {
-                    SnapshotAvailable?.Invoke(snapshot);
-                }
-                catch
-                {
-                    // 購読側の例外でサンプリングループを止めない。
-                }
-            }
+            await Task.WhenAll(
+                RunFastLaneAsync(token),
+                RunProcessLaneAsync(token),
+                RunThermalLaneAsync(token),
+                RunVolumeLaneAsync(token)).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
             // Dispose による正常終了。
+        }
+    }
+
+    private async Task RunFastLaneAsync(CancellationToken token)
+    {
+        var stopwatch = Stopwatch.StartNew();
+        using var timer = new PeriodicTimer(_options.FastInterval);
+
+        while (await timer.WaitForNextTickAsync(token).ConfigureAwait(false))
+        {
+            TimeSpan elapsed = stopwatch.Elapsed;
+            stopwatch.Restart();
+
+            CpuSnapshot cpu = SampleSafe(_cpu, elapsed, CpuSnapshot.Empty);
+            MemorySnapshot memory = SampleSafe(_memory, elapsed, MemorySnapshot.Empty);
+            DiskSnapshot disk = SampleSafe(_disk, elapsed, DiskSnapshot.Empty);
+            NetworkSnapshot network = SampleSafe(_network, elapsed, NetworkSnapshot.Empty);
+            GpuSnapshot gpu = SampleSafe(_gpu, elapsed, GpuSnapshot.Empty);
+
+            Publish(cpu: cpu, memory: memory, disk: disk, network: network, gpu: gpu, appendHistory: true);
+        }
+    }
+
+    private async Task RunProcessLaneAsync(CancellationToken token)
+    {
+        var stopwatch = Stopwatch.StartNew();
+        ProcessSnapshot last = ProcessSnapshot.Empty;
+        using var timer = new PeriodicTimer(_options.ProcessInterval);
+
+        while (await timer.WaitForNextTickAsync(token).ConfigureAwait(false))
+        {
+            TimeSpan elapsed = stopwatch.Elapsed;
+            stopwatch.Restart();
+            last = Volatile.Read(ref _processSamplingEnabled) != 0
+                ? SampleSafe(_processes, elapsed, last)
+                : ProcessSnapshot.Empty;
+            Publish(processes: last);
+        }
+    }
+
+    private async Task RunThermalLaneAsync(CancellationToken token)
+    {
+        var stopwatch = Stopwatch.StartNew();
+        ThermalSnapshot last = ThermalSnapshot.Empty;
+        using var timer = new PeriodicTimer(_options.ThermalInterval);
+
+        while (await timer.WaitForNextTickAsync(token).ConfigureAwait(false))
+        {
+            TimeSpan elapsed = stopwatch.Elapsed;
+            stopwatch.Restart();
+            last = SampleSafe(_thermal, elapsed, last);
+            Publish(thermal: last);
+        }
+    }
+
+    private async Task RunVolumeLaneAsync(CancellationToken token)
+    {
+        var stopwatch = Stopwatch.StartNew();
+        IReadOnlyList<VolumeSnapshot> last = Array.Empty<VolumeSnapshot>();
+        using var timer = new PeriodicTimer(_options.VolumeInterval);
+
+        while (await timer.WaitForNextTickAsync(token).ConfigureAwait(false))
+        {
+            TimeSpan elapsed = stopwatch.Elapsed;
+            stopwatch.Restart();
+            last = SampleSafe(_volumes, elapsed, last);
+            Publish(volumes: last);
+        }
+    }
+
+    /// <summary>1つのレーンで更新された値を反映し、他レーンの直近値と合成して公開する。</summary>
+    private void Publish(
+        CpuSnapshot? cpu = null,
+        MemorySnapshot? memory = null,
+        DiskSnapshot? disk = null,
+        NetworkSnapshot? network = null,
+        GpuSnapshot? gpu = null,
+        ProcessSnapshot? processes = null,
+        ThermalSnapshot? thermal = null,
+        IReadOnlyList<VolumeSnapshot>? volumes = null,
+        bool appendHistory = false)
+    {
+        MetricsSnapshot snapshot;
+        lock (_snapshotLock)
+        {
+            _lastCpu = cpu ?? _lastCpu;
+            _lastMemory = memory ?? _lastMemory;
+            _lastDisk = disk ?? _lastDisk;
+            _lastNetwork = network ?? _lastNetwork;
+            _lastGpu = gpu ?? _lastGpu;
+            _lastProcesses = processes ?? _lastProcesses;
+            _lastThermal = thermal ?? _lastThermal;
+            _lastVolumes = volumes ?? _lastVolumes;
+
+            snapshot = new MetricsSnapshot(
+                Timestamp: DateTimeOffset.UtcNow,
+                Cpu: _lastCpu,
+                Memory: _lastMemory,
+                Disk: _lastDisk,
+                Network: _lastNetwork,
+                Gpu: _lastGpu,
+                Processes: _lastProcesses,
+                Thermal: _lastThermal,
+                Volumes: _lastVolumes);
+
+            _latest = snapshot;
+            if (appendHistory)
+            {
+                History.Append(snapshot);
+            }
+        }
+
+        try
+        {
+            SnapshotAvailable?.Invoke(snapshot);
+        }
+        catch
+        {
+            // 購読側の例外でサンプリングループを止めない。
         }
     }
 

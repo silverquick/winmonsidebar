@@ -7,9 +7,8 @@ namespace Monitor.Windows.Providers;
 
 /// <summary>Supplies <see cref="DiskSnapshot"/> for every physical disk on the machine, combining three
 /// sources: PDH <c>\PhysicalDisk(*)\</c> counters for Read/Write/% Disk Time (per-second), StorageApi's
-/// IOCTL_STORAGE_QUERY_PROPERTY temperature read (per-second, cheap open+ioctl+close per disk - this same
-/// read also carries the drive's self-reported warning/critical temperature thresholds, cached sticky per
-/// drive since those are static even though the read repeats every sample), and StorageApi's static
+/// IOCTL_STORAGE_QUERY_PROPERTY temperature read (cached for a short interval; this same read also carries
+/// the drive's self-reported warning/critical temperature thresholds, cached sticky per drive), and StorageApi's static
 /// identity/capacity/volume-mapping enumeration (cached, refreshed every
 /// <see cref="StaticInfoRefreshInterval"/> to tolerate disks being added/removed at runtime).
 /// Physical disks that PDH does not report an instance for (e.g. it briefly lags a hot-plug) are still
@@ -22,6 +21,7 @@ public sealed class DiskProvider : IMetricProvider<DiskSnapshot>
     private const string TotalInstanceName = "_Total";
 
     private static readonly TimeSpan StaticInfoRefreshInterval = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan TemperatureRefreshInterval = TimeSpan.FromSeconds(10);
 
     private PdhQuery? _query;
     private PdhMultiCounter? _readCounter;
@@ -31,6 +31,7 @@ public sealed class DiskProvider : IMetricProvider<DiskSnapshot>
     private IReadOnlyList<PhysicalDiskInfo> _physicalDisks = Array.Empty<PhysicalDiskInfo>();
     private IReadOnlyList<VolumeToDiskMapping> _volumes = Array.Empty<VolumeToDiskMapping>();
     private DateTime _lastStaticRefreshUtc = DateTime.MinValue;
+    private DateTime _lastTemperatureRefreshUtc = DateTime.MinValue;
 
     // Warning/critical temperature thresholds are static per drive, but they arrive for free in the same
     // per-sample temperature IOCTL call (see Sample()) rather than the separate 30-second static-info
@@ -39,6 +40,7 @@ public sealed class DiskProvider : IMetricProvider<DiskSnapshot>
     // Kept sticky (last known-good value per field) so a single transient read failure - which already
     // nulls out that sample's current temperature - doesn't also blank out an otherwise-known threshold.
     private readonly Dictionary<int, (double? Warning, double? Critical)> _temperatureThresholds = new();
+    private readonly Dictionary<int, DiskTemperatureReading> _temperatureReadings = new();
 
     public string Name => "Disk";
 
@@ -78,6 +80,7 @@ public sealed class DiskProvider : IMetricProvider<DiskSnapshot>
         }
 
         RefreshStaticInfo();
+        RefreshTemperatures();
 
         // Available if either PDH counters work or StorageApi found at least one physical disk -
         // either source alone is still useful (e.g. PDH missing on a locked-down RDP session should not
@@ -99,6 +102,11 @@ public sealed class DiskProvider : IMetricProvider<DiskSnapshot>
                 RefreshStaticInfo();
             }
 
+            if (DateTime.UtcNow - _lastTemperatureRefreshUtc >= TemperatureRefreshInterval)
+            {
+                RefreshTemperatures();
+            }
+
             (Dictionary<int, PdhDiskRates> byDrive, PdhDiskRates? total) = ReadPdhRates();
 
             var devices = new List<DiskDeviceSnapshot>(_physicalDisks.Count);
@@ -107,8 +115,10 @@ public sealed class DiskProvider : IMetricProvider<DiskSnapshot>
             {
                 byDrive.TryGetValue(disk.DriveNumber, out PdhDiskRates rates);
 
-                DiskTemperatureReading temperatureReading = StorageApi.TryReadTemperature(disk.DriveNumber);
-                (double? warningC, double? criticalC) = UpdateAndGetThresholds(disk.DriveNumber, temperatureReading);
+                _temperatureReadings.TryGetValue(disk.DriveNumber, out DiskTemperatureReading temperatureReading);
+                _temperatureThresholds.TryGetValue(disk.DriveNumber, out (double? Warning, double? Critical) thresholds);
+                double? warningC = thresholds.Warning;
+                double? criticalC = thresholds.Critical;
                 List<LogicalVolumeSnapshot> volumes = BuildVolumes(disk.DriveNumber);
 
                 string displayName = volumes.Count > 0
@@ -163,6 +173,7 @@ public sealed class DiskProvider : IMetricProvider<DiskSnapshot>
         _physicalDisks = Array.Empty<PhysicalDiskInfo>();
         _volumes = Array.Empty<VolumeToDiskMapping>();
         _temperatureThresholds.Clear();
+        _temperatureReadings.Clear();
         IsAvailable = false;
     }
 
@@ -183,6 +194,29 @@ public sealed class DiskProvider : IMetricProvider<DiskSnapshot>
         }
 
         return (warning, critical);
+    }
+
+    /// <summary>ディスクごとの温度 IOCTL をまとめて実行し、短時間キャッシュする。
+    /// 温度は 1 秒単位で変化を追う必要がなく、この周期にすることで常駐時のハンドル操作を削減する。</summary>
+    private void RefreshTemperatures()
+    {
+        foreach (PhysicalDiskInfo disk in _physicalDisks)
+        {
+            DiskTemperatureReading reading;
+            try
+            {
+                reading = StorageApi.TryReadTemperature(disk.DriveNumber);
+            }
+            catch
+            {
+                reading = default;
+            }
+
+            _temperatureReadings[disk.DriveNumber] = reading;
+            UpdateAndGetThresholds(disk.DriveNumber, reading);
+        }
+
+        _lastTemperatureRefreshUtc = DateTime.UtcNow;
     }
 
     /// <summary>Re-reads physical disk identity/capacity and physical&lt;-&gt;logical volume mapping from
