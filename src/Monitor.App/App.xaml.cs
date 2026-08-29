@@ -85,7 +85,7 @@ public partial class App : Application
             new MemoryProvider(),
             new DiskProvider(),
             new NetworkProvider(),
-            new GpuProvider(NvidiaVendorSensors.TryCreate()),
+            new GpuProvider(NvidiaVendorSensors.TryCreate),
             new ProcessProvider(options.TopProcessCount),
             new LhmThermalProvider(settings.SensorAliases),
             new VolumeProvider());
