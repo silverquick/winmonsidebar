@@ -4,6 +4,7 @@
     <TargetFramework>net10.0-windows</TargetFramework>
     <UseWPF>true</UseWPF>
     <IsTestProject>true</IsTestProject>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
   <ItemGroup>
@@ -14,6 +15,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Monitor.App\Monitor.App.csproj" />
+    <ProjectReference Include="..\..\src\Monitor.Windows\Monitor.Windows.csproj" />
     <None Include="..\..\src\Monitor.App\Views\SidebarWindow.xaml"
           Link="TestData\SidebarWindow.xaml"
           CopyToOutputDirectory="PreserveNewest" />

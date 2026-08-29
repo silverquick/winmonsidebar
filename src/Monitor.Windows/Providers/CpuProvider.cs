@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Runtime.InteropServices;
 using Microsoft.Win32;
 using Monitor.Core.Abstractions;
@@ -36,6 +37,7 @@ public sealed partial class CpuProvider : IMetricProvider<CpuSnapshot>, IDetailS
     private string _modelName = "";
     private int _physicalCoreCount;
     private int _detailSamplingEnabled = 1;
+    private readonly List<(long Key, double Value)> _coreBuffer = new();
 
     public string Name => "CPU";
 
@@ -170,20 +172,26 @@ public sealed partial class CpuProvider : IMetricProvider<CpuSnapshot>, IDetailS
         {
             _pdhQuery.Collect();
 
-            IReadOnlyList<PdhCounterItem> items = _perCoreCounter.GetValues();
-            if (items.Count == 0)
+            _coreBuffer.Clear();
+            foreach (PdhItemSpan item in _perCoreCounter.Enumerate())
+            {
+                if (TryParseCoreInstance(item.InstanceName, out long sortKey))
+                {
+                    _coreBuffer.Add((sortKey, Math.Clamp(item.Value, 0.0, 100.0)));
+                }
+            }
+
+            if (_coreBuffer.Count == 0)
             {
                 return Array.Empty<double>();
             }
 
-            // "_Total" と "*,_Total" を除外し、"0,0" "0,1" ... の形式の instance name を
-            // カンマ区切りの各要素を数値として比較してソートする（文字列ソートだと "0,10" が
-            // "0,2" より前に来てしまい壊れるため）。
-            var cores = items
-                .Where(item => !IsTotalInstance(item.InstanceName))
-                .OrderBy(item => item, PdhCoreInstanceComparer.Instance)
-                .Select(item => Math.Clamp(item.Value, 0.0, 100.0))
-                .ToArray();
+            _coreBuffer.Sort(static (a, b) => a.Key.CompareTo(b.Key));
+            var cores = new double[_coreBuffer.Count];
+            for (int i = 0; i < _coreBuffer.Count; i++)
+            {
+                cores[i] = _coreBuffer[i].Value;
+            }
 
             return cores;
         }
@@ -204,18 +212,27 @@ public sealed partial class CpuProvider : IMetricProvider<CpuSnapshot>, IDetailS
         {
             // 直近の Collect() は SamplePerCoreUsagePercent 内で既に行われているため、ここでは
             // 同じサンプル時点の値をそのまま読む（GetValues 自体は Collect を必要としない）。
-            IReadOnlyList<PdhCounterItem> items = _perCoreClockCounter.GetValues();
-            if (items.Count == 0)
+            _coreBuffer.Clear();
+            foreach (PdhItemSpan item in _perCoreClockCounter.Enumerate())
+            {
+                if (TryParseCoreInstance(item.InstanceName, out long sortKey))
+                {
+                    _coreBuffer.Add((sortKey, _baseClockMhz * Math.Max(0.0, item.Value) / 100.0));
+                }
+            }
+
+            if (_coreBuffer.Count == 0)
             {
                 return Array.Empty<double>();
             }
 
-            // PerCoreUsagePercent と対応が崩れないよう、同じ Comparer で同じ規則で並べる。
-            var clocks = items
-                .Where(item => !IsTotalInstance(item.InstanceName))
-                .OrderBy(item => item, PdhCoreInstanceComparer.Instance)
-                .Select(item => _baseClockMhz * Math.Max(0.0, item.Value) / 100.0)
-                .ToArray();
+            // PerCoreUsagePercent と対応が崩れないよう、同じ sortKey で同じ規則で並べる。
+            _coreBuffer.Sort(static (a, b) => a.Key.CompareTo(b.Key));
+            var clocks = new double[_coreBuffer.Count];
+            for (int i = 0; i < _coreBuffer.Count; i++)
+            {
+                clocks[i] = _coreBuffer[i].Value;
+            }
 
             return clocks;
         }
@@ -248,7 +265,40 @@ public sealed partial class CpuProvider : IMetricProvider<CpuSnapshot>, IDetailS
         }
     }
 
-    private static bool IsTotalInstance(string instanceName)
+    internal static bool TryParseCoreInstance(ReadOnlySpan<char> instanceName, out long sortKey)
+    {
+        sortKey = 0;
+        ReadOnlySpan<char> trimmed = instanceName.Trim();
+        if (IsTotalInstance(trimmed))
+        {
+            return false;
+        }
+
+        int comma = trimmed.IndexOf(',');
+        if (comma < 0)
+        {
+            if (int.TryParse(trimmed, NumberStyles.Integer, CultureInfo.InvariantCulture, out int proc) && proc >= 0)
+            {
+                sortKey = proc;
+                return true;
+            }
+            return false;
+        }
+
+        ReadOnlySpan<char> groupSpan = trimmed[..comma];
+        ReadOnlySpan<char> procSpan = trimmed[(comma + 1)..];
+
+        if (int.TryParse(groupSpan, NumberStyles.Integer, CultureInfo.InvariantCulture, out int group) && group >= 0 &&
+            int.TryParse(procSpan, NumberStyles.Integer, CultureInfo.InvariantCulture, out int num) && num >= 0)
+        {
+            sortKey = ((long)group << 32) | (uint)num;
+            return true;
+        }
+
+        return false;
+    }
+
+    internal static bool IsTotalInstance(ReadOnlySpan<char> instanceName)
     {
         return instanceName.Equals("_Total", StringComparison.OrdinalIgnoreCase)
             || instanceName.EndsWith(",_Total", StringComparison.OrdinalIgnoreCase);

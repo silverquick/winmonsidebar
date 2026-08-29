@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Runtime.InteropServices;
 using Monitor.Core.Abstractions;
 using Monitor.Core.Models;
 using Monitor.Windows.Native;
@@ -287,34 +288,58 @@ public sealed class DiskProvider : IMetricProvider<DiskSnapshot>
 
         _query.Collect();
 
-        Dictionary<string, double> reads = ToLookup(_readCounter.GetValues());
-        Dictionary<string, double> writes = ToLookup(_writeCounter.GetValues());
-        Dictionary<string, double> busies = ToLookup(_busyCounter.GetValues());
+        var accumulators = new Dictionary<int, DiskRateAccumulator>();
+        double totalRead = 0.0;
+        double totalWrite = 0.0;
+        double totalBusy = 0.0;
+        bool hasTotal = false;
 
-        var instanceNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (string name in reads.Keys) instanceNames.Add(name);
-        foreach (string name in writes.Keys) instanceNames.Add(name);
-        foreach (string name in busies.Keys) instanceNames.Add(name);
-
-        PdhDiskRates? total = null;
-
-        foreach (string instanceName in instanceNames)
+        foreach (PdhItemSpan item in _readCounter.Enumerate())
         {
-            double read = reads.GetValueOrDefault(instanceName, 0.0);
-            double write = writes.GetValueOrDefault(instanceName, 0.0);
-            double busy = ClampPercent(busies.GetValueOrDefault(instanceName, 0.0));
-            var rates = new PdhDiskRates(read, write, busy);
-
-            if (string.Equals(instanceName, TotalInstanceName, StringComparison.OrdinalIgnoreCase))
+            if (item.InstanceName.Equals(TotalInstanceName, StringComparison.OrdinalIgnoreCase))
             {
-                total = rates;
-                continue;
+                totalRead = item.Value;
+                hasTotal = true;
             }
-
-            if (TryParseDriveNumber(instanceName, out int driveNumber))
+            else if (TryParseDriveNumber(item.InstanceName, out int driveNumber))
             {
-                byDrive[driveNumber] = rates;
+                ref DiskRateAccumulator acc = ref CollectionsMarshal.GetValueRefOrAddDefault(accumulators, driveNumber, out _);
+                acc.Read = item.Value;
             }
+        }
+
+        foreach (PdhItemSpan item in _writeCounter.Enumerate())
+        {
+            if (item.InstanceName.Equals(TotalInstanceName, StringComparison.OrdinalIgnoreCase))
+            {
+                totalWrite = item.Value;
+                hasTotal = true;
+            }
+            else if (TryParseDriveNumber(item.InstanceName, out int driveNumber))
+            {
+                ref DiskRateAccumulator acc = ref CollectionsMarshal.GetValueRefOrAddDefault(accumulators, driveNumber, out _);
+                acc.Write = item.Value;
+            }
+        }
+
+        foreach (PdhItemSpan item in _busyCounter.Enumerate())
+        {
+            if (item.InstanceName.Equals(TotalInstanceName, StringComparison.OrdinalIgnoreCase))
+            {
+                totalBusy = ClampPercent(item.Value);
+                hasTotal = true;
+            }
+            else if (TryParseDriveNumber(item.InstanceName, out int driveNumber))
+            {
+                ref DiskRateAccumulator acc = ref CollectionsMarshal.GetValueRefOrAddDefault(accumulators, driveNumber, out _);
+                acc.Busy = ClampPercent(item.Value);
+            }
+        }
+
+        PdhDiskRates? total = hasTotal ? new PdhDiskRates(totalRead, totalWrite, totalBusy) : null;
+        foreach ((int driveNumber, DiskRateAccumulator acc) in accumulators)
+        {
+            byDrive[driveNumber] = new PdhDiskRates(acc.Read, acc.Write, acc.Busy);
         }
 
         return (byDrive, total);
@@ -323,25 +348,21 @@ public sealed class DiskProvider : IMetricProvider<DiskSnapshot>
     /// <summary>Parses the leading physical-disk-number token from a PDH PhysicalDisk instance name,
     /// e.g. "0 C:" -&gt; 0, "1 D: E:" -&gt; 1. Returns false for anything that does not start with digits
     /// (notably "_Total").</summary>
-    private static bool TryParseDriveNumber(string instanceName, out int driveNumber)
+    internal static bool TryParseDriveNumber(ReadOnlySpan<char> instanceName, out int driveNumber)
     {
-        string trimmed = instanceName.Trim();
+        ReadOnlySpan<char> trimmed = instanceName.Trim();
         int spaceIndex = trimmed.IndexOf(' ');
-        string numberToken = spaceIndex > 0 ? trimmed[..spaceIndex] : trimmed;
+        ReadOnlySpan<char> numberToken = spaceIndex > 0 ? trimmed[..spaceIndex] : trimmed;
         return int.TryParse(numberToken, NumberStyles.None, CultureInfo.InvariantCulture, out driveNumber);
     }
 
     private static double ClampPercent(double value) => Math.Clamp(value, 0.0, 100.0);
 
-    private static Dictionary<string, double> ToLookup(IReadOnlyList<PdhCounterItem> items)
+    private struct DiskRateAccumulator
     {
-        var lookup = new Dictionary<string, double>(items.Count, StringComparer.OrdinalIgnoreCase);
-        foreach (PdhCounterItem item in items)
-        {
-            lookup[item.InstanceName] = item.Value;
-        }
-
-        return lookup;
+        public double Read;
+        public double Write;
+        public double Busy;
     }
 
     private readonly record struct PdhDiskRates(double Read, double Write, double Busy);

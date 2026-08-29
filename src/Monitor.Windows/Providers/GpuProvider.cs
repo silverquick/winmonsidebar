@@ -89,7 +89,7 @@ public sealed class GpuProvider : IMetricProvider<GpuSnapshot>
 
             var perAdapter = new Dictionary<long, AdapterAccumulator>();
 
-            foreach (PdhCounterItem item in _engineCounter.GetValues())
+            foreach (PdhItemSpan item in _engineCounter.Enumerate())
             {
                 if (!TryParseEngineInstance(item.InstanceName, out long luid, out ReadOnlySpan<char> engineType))
                 {
@@ -101,7 +101,7 @@ public sealed class GpuProvider : IMetricProvider<GpuSnapshot>
 
             if (_dedicatedMemoryCounter is not null)
             {
-                foreach (PdhCounterItem item in _dedicatedMemoryCounter.GetValues())
+                foreach (PdhItemSpan item in _dedicatedMemoryCounter.Enumerate())
                 {
                     if (!TryParseMemoryInstance(item.InstanceName, out long luid))
                     {
@@ -350,7 +350,7 @@ public sealed class GpuProvider : IMetricProvider<GpuSnapshot>
     /// and the engtype suffix (e.g. "3D", "Copy", "VideoDecode", ...). Span-based: no substrings are
     /// allocated for the (very hot, up to hundreds-per-second) common engine-type comparisons.
     /// </summary>
-    private static bool TryParseEngineInstance(ReadOnlySpan<char> instanceName, out long luid, out ReadOnlySpan<char> engineType)
+    internal static bool TryParseEngineInstance(ReadOnlySpan<char> instanceName, out long luid, out ReadOnlySpan<char> engineType)
     {
         engineType = default;
 
@@ -375,7 +375,7 @@ public sealed class GpuProvider : IMetricProvider<GpuSnapshot>
     /// Parses a "\GPU Adapter Memory(*)" instance name of the form
     /// "luid_0x00000000_0x0000ABCD_phys_0", extracting only the adapter LUID.
     /// </summary>
-    private static bool TryParseMemoryInstance(ReadOnlySpan<char> instanceName, out long luid)
+    internal static bool TryParseMemoryInstance(ReadOnlySpan<char> instanceName, out long luid)
         => TryParseLuid(instanceName, out luid, out _);
 
     /// <summary>
@@ -383,7 +383,7 @@ public sealed class GpuProvider : IMetricProvider<GpuSnapshot>
     /// group is HighPart, the second is LowPart (matches Windows' own LUID field order). Combines them
     /// exactly the way Dxgi.EnumerateAdapters() does, so the two can be matched by equality.
     /// </summary>
-    private static bool TryParseLuid(ReadOnlySpan<char> instanceName, out long luid, out int afterIndex)
+    internal static bool TryParseLuid(ReadOnlySpan<char> instanceName, out long luid, out int afterIndex)
     {
         luid = 0;
         afterIndex = -1;
@@ -444,7 +444,7 @@ public sealed class GpuProvider : IMetricProvider<GpuSnapshot>
     /// allocation on the hot path; any other engtype (Security, Sc, Crypto, ...) falls back to a
     /// lazily-created dictionary since it is only needed to compute the overall max-category total.
     /// </summary>
-    private sealed class AdapterAccumulator
+    internal sealed class AdapterAccumulator
     {
         public double Engine3D;
         public double EngineCopy;

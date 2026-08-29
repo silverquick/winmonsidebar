@@ -9,4 +9,8 @@
     <ProjectReference Include="..\Monitor.Core\Monitor.Core.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="Monitor.App.Tests" />
+  </ItemGroup>
+
 </Project>

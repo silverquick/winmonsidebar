@@ -6,6 +6,60 @@ namespace Monitor.Windows.Native;
 /// <summary>One value read from a wildcard-expanded PDH counter, e.g. one CPU core or one disk instance.</summary>
 public readonly record struct PdhCounterItem(string InstanceName, double Value);
 
+/// <summary>One value read from a wildcard-expanded PDH counter without string allocation.</summary>
+public readonly ref struct PdhItemSpan
+{
+    public ReadOnlySpan<char> InstanceName { get; }
+    public double Value { get; }
+
+    public PdhItemSpan(ReadOnlySpan<char> instanceName, double value)
+    {
+        InstanceName = instanceName;
+        Value = value;
+    }
+}
+
+/// <summary>Ref-struct enumerator that walks the native PDH counter value item buffer directly.</summary>
+public ref struct PdhCounterEnumerator
+{
+    private readonly IntPtr _buffer;
+    private readonly int _itemCount;
+    private int _index;
+    private PdhItemSpan _current;
+
+    internal PdhCounterEnumerator(IntPtr buffer, int itemCount)
+    {
+        _buffer = buffer;
+        _itemCount = itemCount;
+        _index = -1;
+        _current = default;
+    }
+
+    public PdhItemSpan Current => _current;
+
+    public bool MoveNext()
+    {
+        _index++;
+        if (_index < _itemCount && _buffer != IntPtr.Zero)
+        {
+            unsafe
+            {
+                var pItem = (PDH_FMT_COUNTERVALUE_ITEM_W*)_buffer + _index;
+                ReadOnlySpan<char> name = pItem->szName == IntPtr.Zero
+                    ? ReadOnlySpan<char>.Empty
+                    : MemoryMarshal.CreateReadOnlySpanFromNullTerminated((char*)pItem->szName);
+                double val = PdhCounter.IsErrorStatus(pItem->FmtValue.CStatus) ? 0.0 : pItem->FmtValue.doubleValue;
+                _current = new PdhItemSpan(name, val);
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    public PdhCounterEnumerator GetEnumerator() => this;
+}
+
 /// <summary>SafeHandle wrapper around a PDH query handle (HQUERY). Closing it via PdhCloseQuery also
 /// invalidates every counter handle that was added to it, so counters themselves do not need a SafeHandle.</summary>
 internal sealed class SafePdhQueryHandle : SafeHandleZeroOrMinusOneIsInvalid
@@ -67,69 +121,122 @@ public sealed class PdhCounter
 
 /// <summary>A wildcard-instance PDH counter (e.g. "\Processor Information(*)\% Processor Utility" or
 /// "\PhysicalDisk(*)\% Disk Time"), returning one value per matched instance.</summary>
-public sealed class PdhMultiCounter
+public sealed class PdhMultiCounter : IDisposable
 {
+    internal delegate uint PdhGetCounterArrayFunc(IntPtr hCounter, uint dwFormat, ref uint lpdwBufferSize, ref uint lpdwItemCount, IntPtr itemBuffer);
+
     private readonly IntPtr _handle;
+    private readonly PdhGetCounterArrayFunc _getArrayFunc;
+    private IntPtr _buffer = IntPtr.Zero;
+    private uint _bufferCapacity = 0;
+    private uint _itemCount = 0;
+    private bool _disposed;
 
     internal PdhMultiCounter(string path, IntPtr handle)
+        : this(path, handle, Pdh.PdhGetFormattedCounterArrayW)
+    {
+    }
+
+    internal PdhMultiCounter(string path, IntPtr handle, PdhGetCounterArrayFunc getArrayFunc)
     {
         Path = path;
         _handle = handle;
+        _getArrayFunc = getArrayFunc;
     }
 
     public string Path { get; }
 
-    /// <summary>Reads all current instance values. Never throws; returns an empty list on any failure
-    /// (including "not enough data yet" on the first sample after AddMultiCounter).</summary>
-    public IReadOnlyList<PdhCounterItem> GetValues()
+    ~PdhMultiCounter()
     {
+        Dispose(false);
+    }
+
+    public void Dispose()
+    {
+        Dispose(true);
+        GC.SuppressFinalize(this);
+    }
+
+    private void Dispose(bool disposing)
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _disposed = true;
+        if (_buffer != IntPtr.Zero)
+        {
+            Marshal.FreeHGlobal(_buffer);
+            _buffer = IntPtr.Zero;
+            _bufferCapacity = 0;
+            _itemCount = 0;
+        }
+    }
+
+    /// <summary>Reads all current instance values without string or array allocations by returning a ref-struct enumerator.</summary>
+    public PdhCounterEnumerator Enumerate()
+    {
+        if (_disposed || _handle == IntPtr.Zero)
+        {
+            return new PdhCounterEnumerator(IntPtr.Zero, 0);
+        }
+
         const uint format = Pdh.PDH_FMT_DOUBLE | Pdh.PDH_FMT_NOCAP100;
 
         try
         {
-            uint bufferSize = 0;
+            uint bufferSize = _bufferCapacity;
             uint itemCount = 0;
-            uint status = Pdh.PdhGetFormattedCounterArrayW(_handle, format, ref bufferSize, ref itemCount, IntPtr.Zero);
-            if (status != Pdh.PDH_MORE_DATA || bufferSize == 0)
-            {
-                return Array.Empty<PdhCounterItem>();
-            }
 
-            IntPtr buffer = Marshal.AllocHGlobal((int)bufferSize);
-            try
+            if (_buffer == IntPtr.Zero || bufferSize == 0)
             {
-                status = Pdh.PdhGetFormattedCounterArrayW(_handle, format, ref bufferSize, ref itemCount, buffer);
-                if (status != 0)
+                uint status = _getArrayFunc(_handle, format, ref bufferSize, ref itemCount, IntPtr.Zero);
+                if (status != Pdh.PDH_MORE_DATA || bufferSize == 0)
                 {
-                    return Array.Empty<PdhCounterItem>();
+                    _itemCount = 0;
+                    return new PdhCounterEnumerator(IntPtr.Zero, 0);
                 }
 
-                int itemSize = Marshal.SizeOf<PDH_FMT_COUNTERVALUE_ITEM_W>();
-                var results = new List<PdhCounterItem>((int)itemCount);
-                for (int i = 0; i < itemCount; i++)
-                {
-                    IntPtr itemPtr = IntPtr.Add(buffer, i * itemSize);
-                    PDH_FMT_COUNTERVALUE_ITEM_W item = Marshal.PtrToStructure<PDH_FMT_COUNTERVALUE_ITEM_W>(itemPtr);
-
-                    string name = item.szName != IntPtr.Zero
-                        ? Marshal.PtrToStringUni(item.szName) ?? string.Empty
-                        : string.Empty;
-                    double value = PdhCounter.IsErrorStatus(item.FmtValue.CStatus) ? 0.0 : item.FmtValue.doubleValue;
-
-                    results.Add(new PdhCounterItem(name, value));
-                }
-
-                return results;
+                _buffer = Marshal.AllocHGlobal((int)bufferSize);
+                _bufferCapacity = bufferSize;
             }
-            finally
+
+            uint getStatus = _getArrayFunc(_handle, format, ref bufferSize, ref itemCount, _buffer);
+            if (getStatus == Pdh.PDH_MORE_DATA)
             {
-                Marshal.FreeHGlobal(buffer);
+                Marshal.FreeHGlobal(_buffer);
+                _buffer = Marshal.AllocHGlobal((int)bufferSize);
+                _bufferCapacity = bufferSize;
+
+                getStatus = _getArrayFunc(_handle, format, ref bufferSize, ref itemCount, _buffer);
             }
+
+            if (getStatus != 0)
+            {
+                _itemCount = 0;
+                return new PdhCounterEnumerator(IntPtr.Zero, 0);
+            }
+
+            _itemCount = itemCount;
+            return new PdhCounterEnumerator(_buffer, (int)itemCount);
         }
         catch
         {
-            return Array.Empty<PdhCounterItem>();
+            _itemCount = 0;
+            return new PdhCounterEnumerator(IntPtr.Zero, 0);
         }
+    }
+
+    /// <summary>Reads all current instance values into managed PdhCounterItem objects. Backward compatibility method.</summary>
+    public IReadOnlyList<PdhCounterItem> GetValues()
+    {
+        var results = new List<PdhCounterItem>();
+        foreach (PdhItemSpan item in Enumerate())
+        {
+            results.Add(new PdhCounterItem(item.InstanceName.ToString(), item.Value));
+        }
+        return results;
     }
 }
 
@@ -139,6 +246,7 @@ public sealed class PdhMultiCounter
 public sealed class PdhQuery : IDisposable
 {
     private readonly SafePdhQueryHandle _handle;
+    private readonly List<PdhMultiCounter> _multiCounters = new();
     private bool _disposed;
 
     private PdhQuery(SafePdhQueryHandle handle)
@@ -207,7 +315,9 @@ public sealed class PdhQuery : IDisposable
                 return null;
             }
 
-            return new PdhMultiCounter(englishPath, counterHandle);
+            var counter = new PdhMultiCounter(englishPath, counterHandle);
+            _multiCounters.Add(counter);
+            return counter;
         }
         catch
         {
@@ -242,6 +352,11 @@ public sealed class PdhQuery : IDisposable
         }
 
         _disposed = true;
+        foreach (PdhMultiCounter counter in _multiCounters)
+        {
+            counter.Dispose();
+        }
+        _multiCounters.Clear();
         _handle.Dispose();
     }
 }
