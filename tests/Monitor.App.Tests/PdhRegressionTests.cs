@@ -25,27 +25,17 @@ public sealed class PdhRegressionTests
         uint FakeGetArray(IntPtr hCounter, uint dwFormat, ref uint lpdwBufferSize, ref uint lpdwItemCount, IntPtr itemBuffer)
         {
             getArrayCallCount++;
-            (IntPtr nativeBuf, uint neededSize) = CreateNativeBuffer(currentItems);
-            try
-            {
-                if (itemBuffer == IntPtr.Zero || lpdwBufferSize < neededSize)
-                {
-                    lpdwBufferSize = neededSize;
-                    return Pdh.PDH_MORE_DATA;
-                }
+            uint neededSize = CalculateNativeBufferSize(currentItems);
 
-                unsafe
-                {
-                    Buffer.MemoryCopy((void*)nativeBuf, (void*)itemBuffer, lpdwBufferSize, neededSize);
-                }
-
-                lpdwItemCount = (uint)currentItems.Length;
-                return 0;
-            }
-            finally
+            if (itemBuffer == IntPtr.Zero || lpdwBufferSize < neededSize)
             {
-                Marshal.FreeHGlobal(nativeBuf);
+                lpdwBufferSize = neededSize;
+                return Pdh.PDH_MORE_DATA;
             }
+
+            WriteNativeBuffer(itemBuffer, currentItems);
+            lpdwItemCount = (uint)currentItems.Length;
+            return 0;
         }
 
         using var multiCounter = new PdhMultiCounter(@"\Processor Information(*)\% Processor Utility", new IntPtr(0x1234), FakeGetArray);
@@ -110,10 +100,13 @@ public sealed class PdhRegressionTests
         // 4. GetValues backward compatibility
         IReadOnlyList<PdhCounterItem> legacyValues = multiCounter.GetValues();
         Assert.AreEqual(5, legacyValues.Count);
-        Assert.AreEqual("0,0", legacyValues[0].InstanceName);
-        Assert.AreEqual(10.0, legacyValues[0].Value, 0.001);
-        Assert.AreEqual("0,4", legacyValues[4].InstanceName);
-        Assert.AreEqual(50.0, legacyValues[4].Value, 0.001);
+        for (int i = 0; i < 5; i++)
+        {
+            Assert.AreEqual(currentItems[i].Name, legacyValues[i].InstanceName);
+            Assert.AreEqual(currentItems[i].Value, legacyValues[i].Value, 0.001);
+            Assert.AreEqual(itemsList3[i].Name, legacyValues[i].InstanceName);
+            Assert.AreEqual(itemsList3[i].Value, legacyValues[i].Value, 0.001);
+        }
     }
 
     [TestMethod]
@@ -127,9 +120,11 @@ public sealed class PdhRegressionTests
             ("negdenom", 77.0, Pdh.PDH_CALC_NEGATIVE_DENOMINATOR),
         };
 
-        (IntPtr buffer, _) = CreateNativeBuffer(rawItems);
+        uint neededSize = CalculateNativeBufferSize(rawItems);
+        IntPtr buffer = Marshal.AllocHGlobal((int)neededSize);
         try
         {
+            WriteNativeBuffer(buffer, rawItems);
             var enumerator = new PdhCounterEnumerator(buffer, rawItems.Length);
             var results = new List<(string Name, double Value)>();
             while (enumerator.MoveNext())
@@ -331,7 +326,7 @@ public sealed class PdhRegressionTests
         Assert.AreEqual(0, cpuSnap.PerCoreClockMhz.Count);
     }
 
-    private static (IntPtr Buffer, uint ByteSize) CreateNativeBuffer((string Name, double Value, uint CStatus)[] items)
+    private static uint CalculateNativeBufferSize((string Name, double Value, uint CStatus)[] items)
     {
         int itemSize = Marshal.SizeOf<PDH_FMT_COUNTERVALUE_ITEM_W>();
         int totalSize = items.Length * itemSize;
@@ -340,13 +335,18 @@ public sealed class PdhRegressionTests
             totalSize += (item.Name.Length + 1) * sizeof(char);
         }
 
-        IntPtr buffer = Marshal.AllocHGlobal(totalSize);
+        return (uint)totalSize;
+    }
+
+    private static void WriteNativeBuffer(IntPtr destination, (string Name, double Value, uint CStatus)[] items)
+    {
+        int itemSize = Marshal.SizeOf<PDH_FMT_COUNTERVALUE_ITEM_W>();
         int stringOffset = items.Length * itemSize;
 
         for (int i = 0; i < items.Length; i++)
         {
-            IntPtr itemPtr = IntPtr.Add(buffer, i * itemSize);
-            IntPtr namePtr = IntPtr.Add(buffer, stringOffset);
+            IntPtr itemPtr = IntPtr.Add(destination, i * itemSize);
+            IntPtr namePtr = IntPtr.Add(destination, stringOffset);
 
             char[] chars = (items[i].Name + "\0").ToCharArray();
             Marshal.Copy(chars, 0, namePtr, chars.Length);
@@ -364,7 +364,5 @@ public sealed class PdhRegressionTests
 
             Marshal.StructureToPtr(nativeItem, itemPtr, false);
         }
-
-        return (buffer, (uint)totalSize);
     }
 }

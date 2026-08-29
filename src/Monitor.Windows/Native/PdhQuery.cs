@@ -203,12 +203,24 @@ public sealed class PdhMultiCounter : IDisposable
             }
 
             uint getStatus = _getArrayFunc(_handle, format, ref bufferSize, ref itemCount, _buffer);
-            if (getStatus == Pdh.PDH_MORE_DATA)
+            int attempts = 0;
+            while (getStatus == Pdh.PDH_MORE_DATA && attempts < 3)
             {
-                Marshal.FreeHGlobal(_buffer);
+                attempts++;
+                if (_buffer != IntPtr.Zero)
+                {
+                    Marshal.FreeHGlobal(_buffer);
+                    _buffer = IntPtr.Zero;
+                    _bufferCapacity = 0;
+                }
+
+                if (bufferSize == 0)
+                {
+                    break;
+                }
+
                 _buffer = Marshal.AllocHGlobal((int)bufferSize);
                 _bufferCapacity = bufferSize;
-
                 getStatus = _getArrayFunc(_handle, format, ref bufferSize, ref itemCount, _buffer);
             }
 
