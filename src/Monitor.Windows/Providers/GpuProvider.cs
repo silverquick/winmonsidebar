@@ -13,7 +13,8 @@ namespace Monitor.Windows.Providers;
 /// </summary>
 public sealed class GpuProvider : IMetricProvider<GpuSnapshot>
 {
-    private readonly IGpuVendorSensors? _vendorSensors;
+    private readonly Func<IGpuVendorSensors?>? _vendorSensorsFactory;
+    private IGpuVendorSensors? _vendorSensors;
 
     private PdhQuery? _query;
     private PdhMultiCounter? _engineCounter;
@@ -23,11 +24,20 @@ public sealed class GpuProvider : IMetricProvider<GpuSnapshot>
     private bool _disposed;
 
     /// <summary>
-    /// <paramref name="vendorSensors"/> はベンダー固有 API（NVAPI 等）由来の追加センサー（温度/ファン/
-    /// 電力/クロック）の供給元。層を逆転させないため、この層は具体的なベンダー実装を知らない。
+    /// <paramref name="vendorSensorsFactory"/> はベンダー固有 API（NVAPI 等）由来の追加センサー（温度/ファン/
+    /// 電力/クロック）を遅延生成するファクトリ。層を逆転させないため、この層は具体的なベンダー実装を知らない。
+    /// 初期化は <see cref="Initialize"/> 時にバックグラウンドで実行される。
     /// null なら該当項目は常に null のままになる（NVIDIA 以外の GPU / ドライバ無し等）。
     /// </summary>
-    public GpuProvider(IGpuVendorSensors? vendorSensors = null)
+    public GpuProvider(Func<IGpuVendorSensors?>? vendorSensorsFactory = null)
+    {
+        _vendorSensorsFactory = vendorSensorsFactory;
+    }
+
+    /// <summary>
+    /// 既存の <see cref="IGpuVendorSensors"/> インスタンスを直接受け取るコンストラクタ（テスト等向け）。
+    /// </summary>
+    public GpuProvider(IGpuVendorSensors? vendorSensors)
     {
         _vendorSensors = vendorSensors;
     }
@@ -38,6 +48,11 @@ public sealed class GpuProvider : IMetricProvider<GpuSnapshot>
 
     public void Initialize()
     {
+        if (_disposed)
+        {
+            return;
+        }
+
         try
         {
             _adapters = Dxgi.EnumerateAdapters();
@@ -45,6 +60,18 @@ public sealed class GpuProvider : IMetricProvider<GpuSnapshot>
         catch
         {
             _adapters = Array.Empty<DxgiAdapterInfo>();
+        }
+
+        if (_vendorSensors is null && _vendorSensorsFactory is not null)
+        {
+            try
+            {
+                _vendorSensors = _vendorSensorsFactory();
+            }
+            catch
+            {
+                _vendorSensors = null;
+            }
         }
 
         try
