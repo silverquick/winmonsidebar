@@ -23,13 +23,15 @@ public sealed class DiskProvider : IMetricProvider<DiskSnapshot>
     private static readonly TimeSpan StaticInfoRefreshInterval = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan TemperatureRefreshInterval = TimeSpan.FromSeconds(10);
 
+    private readonly Func<IReadOnlyList<PhysicalDiskInfo>> _enumerateDisks;
+    private readonly Func<IReadOnlyList<VolumeToDiskMapping>> _enumerateVolumes;
+
     private PdhQuery? _query;
     private PdhMultiCounter? _readCounter;
     private PdhMultiCounter? _writeCounter;
     private PdhMultiCounter? _busyCounter;
 
-    private IReadOnlyList<PhysicalDiskInfo> _physicalDisks = Array.Empty<PhysicalDiskInfo>();
-    private IReadOnlyList<VolumeToDiskMapping> _volumes = Array.Empty<VolumeToDiskMapping>();
+    private DiskStaticState _staticState = DiskStaticState.Empty;
     private DateTime _lastStaticRefreshUtc = DateTime.MinValue;
     private DateTime _lastTemperatureRefreshUtc = DateTime.MinValue;
 
@@ -45,6 +47,20 @@ public sealed class DiskProvider : IMetricProvider<DiskSnapshot>
     public string Name => "Disk";
 
     public bool IsAvailable { get; private set; }
+
+    public DiskProvider() : this(
+        StorageApi.EnumeratePhysicalDisks,
+        StorageApi.EnumerateFixedVolumesWithDiskMapping)
+    {
+    }
+
+    internal DiskProvider(
+        Func<IReadOnlyList<PhysicalDiskInfo>> enumerateDisks,
+        Func<IReadOnlyList<VolumeToDiskMapping>> enumerateVolumes)
+    {
+        _enumerateDisks = enumerateDisks;
+        _enumerateVolumes = enumerateVolumes;
+    }
 
     public void Initialize()
     {
@@ -85,7 +101,7 @@ public sealed class DiskProvider : IMetricProvider<DiskSnapshot>
         // Available if either PDH counters work or StorageApi found at least one physical disk -
         // either source alone is still useful (e.g. PDH missing on a locked-down RDP session should not
         // hide disk identity/temperature, and PDH-only should not be blocked by a StorageApi hiccup).
-        IsAvailable = _query is not null || _physicalDisks.Count > 0;
+        IsAvailable = _query is not null || _staticState.PhysicalDisks.Count > 0;
     }
 
     public DiskSnapshot Sample(TimeSpan elapsed)
@@ -109,9 +125,13 @@ public sealed class DiskProvider : IMetricProvider<DiskSnapshot>
 
             (Dictionary<int, PdhDiskRates> byDrive, PdhDiskRates? total) = ReadPdhRates();
 
-            var devices = new List<DiskDeviceSnapshot>(_physicalDisks.Count);
+            DiskStaticState staticState = _staticState;
+            IReadOnlyList<PhysicalDiskInfo> physicalDisks = staticState.PhysicalDisks;
+            Dictionary<int, DiskStaticProjection> projections = staticState.Projections;
 
-            foreach (PhysicalDiskInfo disk in _physicalDisks)
+            var devices = new List<DiskDeviceSnapshot>(physicalDisks.Count);
+
+            foreach (PhysicalDiskInfo disk in physicalDisks)
             {
                 byDrive.TryGetValue(disk.DriveNumber, out PdhDiskRates rates);
 
@@ -119,11 +139,13 @@ public sealed class DiskProvider : IMetricProvider<DiskSnapshot>
                 _temperatureThresholds.TryGetValue(disk.DriveNumber, out (double? Warning, double? Critical) thresholds);
                 double? warningC = thresholds.Warning;
                 double? criticalC = thresholds.Critical;
-                List<LogicalVolumeSnapshot> volumes = BuildVolumes(disk.DriveNumber);
 
-                string displayName = volumes.Count > 0
-                    ? string.Join(' ', volumes.Select(v => v.DriveLetter))
-                    : string.Create(CultureInfo.InvariantCulture, $"Disk {disk.DriveNumber}");
+                if (!projections.TryGetValue(disk.DriveNumber, out DiskStaticProjection projection))
+                {
+                    projection = new DiskStaticProjection(
+                        Array.Empty<LogicalVolumeSnapshot>(),
+                        string.Create(CultureInfo.InvariantCulture, $"Disk {disk.DriveNumber}"));
+                }
 
                 devices.Add(new DiskDeviceSnapshot
                 {
@@ -138,8 +160,8 @@ public sealed class DiskProvider : IMetricProvider<DiskSnapshot>
                     TemperatureC = temperatureReading.CurrentC,
                     WarningTemperatureC = warningC,
                     CriticalTemperatureC = criticalC,
-                    Volumes = volumes,
-                    DisplayName = displayName,
+                    Volumes = projection.Volumes,
+                    DisplayName = projection.DisplayName,
                 });
             }
 
@@ -170,8 +192,7 @@ public sealed class DiskProvider : IMetricProvider<DiskSnapshot>
         _readCounter = null;
         _writeCounter = null;
         _busyCounter = null;
-        _physicalDisks = Array.Empty<PhysicalDiskInfo>();
-        _volumes = Array.Empty<VolumeToDiskMapping>();
+        _staticState = DiskStaticState.Empty;
         _temperatureThresholds.Clear();
         _temperatureReadings.Clear();
         IsAvailable = false;
@@ -200,7 +221,7 @@ public sealed class DiskProvider : IMetricProvider<DiskSnapshot>
     /// 温度は 1 秒単位で変化を追う必要がなく、この周期にすることで常駐時のハンドル操作を削減する。</summary>
     private void RefreshTemperatures()
     {
-        foreach (PhysicalDiskInfo disk in _physicalDisks)
+        foreach (PhysicalDiskInfo disk in _staticState.PhysicalDisks)
         {
             DiskTemperatureReading reading;
             try
@@ -222,45 +243,54 @@ public sealed class DiskProvider : IMetricProvider<DiskSnapshot>
     /// <summary>Re-reads physical disk identity/capacity and physical&lt;-&gt;logical volume mapping from
     /// StorageApi. Cheap-ish (opens every \\.\PhysicalDriveN and every fixed \\.\X: once) but not free,
     /// hence only called from Initialize() and every StaticInfoRefreshInterval thereafter. Never throws.</summary>
-    private void RefreshStaticInfo()
+    internal void RefreshStaticInfo()
     {
+        IReadOnlyList<PhysicalDiskInfo> physicalDisks;
         try
         {
-            _physicalDisks = StorageApi.EnumeratePhysicalDisks();
+            physicalDisks = _enumerateDisks();
         }
         catch
         {
-            _physicalDisks = Array.Empty<PhysicalDiskInfo>();
+            physicalDisks = Array.Empty<PhysicalDiskInfo>();
         }
 
+        IReadOnlyList<VolumeToDiskMapping> volumes;
         try
         {
-            _volumes = StorageApi.EnumerateFixedVolumesWithDiskMapping();
+            volumes = _enumerateVolumes();
         }
         catch
         {
-            _volumes = Array.Empty<VolumeToDiskMapping>();
+            volumes = Array.Empty<VolumeToDiskMapping>();
         }
 
+        Dictionary<int, DiskStaticProjection> projections = BuildStaticProjections(physicalDisks, volumes);
+
+        // 物理ディスク一覧と静的 volume 投影を単一の参照代入で atomic に更新する
+        _staticState = new DiskStaticState(physicalDisks, projections);
         _lastStaticRefreshUtc = DateTime.UtcNow;
     }
 
-    private List<LogicalVolumeSnapshot> BuildVolumes(int driveNumber)
+    internal static Dictionary<int, DiskStaticProjection> BuildStaticProjections(
+        IReadOnlyList<PhysicalDiskInfo> physicalDisks,
+        IReadOnlyList<VolumeToDiskMapping> volumes)
     {
-        var result = new List<LogicalVolumeSnapshot>();
+        var volumesByDisk = new Dictionary<int, List<LogicalVolumeSnapshot>>();
 
-        foreach (VolumeToDiskMapping volume in _volumes)
+        foreach (VolumeToDiskMapping volume in volumes)
         {
-            if (volume.DiskNumber != driveNumber)
+            if (!volumesByDisk.TryGetValue(volume.DiskNumber, out List<LogicalVolumeSnapshot>? list))
             {
-                continue;
+                list = new List<LogicalVolumeSnapshot>();
+                volumesByDisk[volume.DiskNumber] = list;
             }
 
-            double usedPercent = volume.TotalBytes > 0
+            double usedPercent = volume.TotalBytes > 0 && volume.TotalBytes >= volume.FreeBytes
                 ? ClampPercent(100.0 * (volume.TotalBytes - volume.FreeBytes) / volume.TotalBytes)
                 : 0.0;
 
-            result.Add(new LogicalVolumeSnapshot
+            list.Add(new LogicalVolumeSnapshot
             {
                 DriveLetter = volume.DriveLetter,
                 Label = volume.Label,
@@ -270,7 +300,22 @@ public sealed class DiskProvider : IMetricProvider<DiskSnapshot>
             });
         }
 
-        return result;
+        var projections = new Dictionary<int, DiskStaticProjection>(physicalDisks.Count);
+
+        foreach (PhysicalDiskInfo disk in physicalDisks)
+        {
+            IReadOnlyList<LogicalVolumeSnapshot> diskVolumes = volumesByDisk.TryGetValue(disk.DriveNumber, out List<LogicalVolumeSnapshot>? list)
+                ? list.ToArray()
+                : Array.Empty<LogicalVolumeSnapshot>();
+
+            string displayName = diskVolumes.Count > 0
+                ? string.Join(' ', diskVolumes.Select(v => v.DriveLetter))
+                : string.Create(CultureInfo.InvariantCulture, $"Disk {disk.DriveNumber}");
+
+            projections[disk.DriveNumber] = new DiskStaticProjection(diskVolumes, displayName);
+        }
+
+        return projections;
     }
 
     /// <summary>Collects and reads the three PDH counters, splitting instance values into a per-physical-
@@ -345,4 +390,26 @@ public sealed class DiskProvider : IMetricProvider<DiskSnapshot>
     }
 
     private readonly record struct PdhDiskRates(double Read, double Write, double Busy);
+
+    internal sealed class DiskStaticState
+    {
+        public IReadOnlyList<PhysicalDiskInfo> PhysicalDisks { get; }
+        public Dictionary<int, DiskStaticProjection> Projections { get; }
+
+        public DiskStaticState(
+            IReadOnlyList<PhysicalDiskInfo> physicalDisks,
+            Dictionary<int, DiskStaticProjection> projections)
+        {
+            PhysicalDisks = physicalDisks;
+            Projections = projections;
+        }
+
+        public static DiskStaticState Empty { get; } = new(
+            Array.Empty<PhysicalDiskInfo>(),
+            new Dictionary<int, DiskStaticProjection>());
+    }
+
+    internal readonly record struct DiskStaticProjection(
+        IReadOnlyList<LogicalVolumeSnapshot> Volumes,
+        string DisplayName);
 }
