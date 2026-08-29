@@ -36,6 +36,7 @@ internal static partial class Pdh
     public const uint PDH_INVALID_DATA = 0xC0000BC6;
     public const uint PDH_NO_DATA = 0x800007D5;
     public const uint PDH_CALC_NEGATIVE_DENOMINATOR = 0x800007D6;
+    public const uint PDH_INVALID_ARGUMENT = 0xC0000BBD;
 
     [LibraryImport("pdh.dll", EntryPoint = "PdhOpenQueryW", StringMarshalling = StringMarshalling.Utf16)]
     public static partial uint PdhOpenQueryW(string? szDataSource, IntPtr dwUserData, out IntPtr phQuery);

@@ -183,58 +183,93 @@ public sealed class PdhMultiCounter : IDisposable
         }
 
         const uint format = Pdh.PDH_FMT_DOUBLE | Pdh.PDH_FMT_NOCAP100;
+        const int maxAttempts = 3;
 
         try
         {
-            uint bufferSize = _bufferCapacity;
-            uint itemCount = 0;
-
-            if (_buffer == IntPtr.Zero || bufferSize == 0)
+            for (int attempt = 0; attempt < maxAttempts; attempt++)
             {
-                uint status = _getArrayFunc(_handle, format, ref bufferSize, ref itemCount, IntPtr.Zero);
-                if (status != Pdh.PDH_MORE_DATA || bufferSize == 0)
+                // 1. Fast path / steady state with existing buffer
+                if (_buffer != IntPtr.Zero && _bufferCapacity > 0)
+                {
+                    uint suppliedSize = _bufferCapacity;
+                    uint itemCount = 0;
+                    uint status = _getArrayFunc(_handle, format, ref suppliedSize, ref itemCount, _buffer);
+
+                    if (status == 0)
+                    {
+                        _itemCount = itemCount;
+                        return new PdhCounterEnumerator(_buffer, (int)itemCount);
+                    }
+
+                    if (status != Pdh.PDH_MORE_DATA && status != Pdh.PDH_INVALID_ARGUMENT)
+                    {
+                        _itemCount = 0;
+                        return new PdhCounterEnumerator(IntPtr.Zero, 0);
+                    }
+
+                    // Insufficient existing buffer: DO NOT trust suppliedSize.
+                    // Free existing buffer and re-probe size from NULL/0.
+                    Marshal.FreeHGlobal(_buffer);
+                    _buffer = IntPtr.Zero;
+                    _bufferCapacity = 0;
+                    _itemCount = 0;
+                }
+
+                // 2. Reliable probe with NULL/0
+                uint requiredSize = 0;
+                uint probeItemCount = 0;
+                uint probeStatus = _getArrayFunc(_handle, format, ref requiredSize, ref probeItemCount, IntPtr.Zero);
+
+                if (probeStatus != Pdh.PDH_MORE_DATA || requiredSize == 0)
                 {
                     _itemCount = 0;
                     return new PdhCounterEnumerator(IntPtr.Zero, 0);
                 }
 
-                _buffer = Marshal.AllocHGlobal((int)bufferSize);
-                _bufferCapacity = bufferSize;
-            }
+                _buffer = Marshal.AllocHGlobal((int)requiredSize);
+                _bufferCapacity = requiredSize;
 
-            uint getStatus = _getArrayFunc(_handle, format, ref bufferSize, ref itemCount, _buffer);
-            int attempts = 0;
-            while (getStatus == Pdh.PDH_MORE_DATA && attempts < 3)
-            {
-                attempts++;
-                if (_buffer != IntPtr.Zero)
+                uint fetchSize = _bufferCapacity;
+                uint fetchItemCount = 0;
+                uint fetchStatus = _getArrayFunc(_handle, format, ref fetchSize, ref fetchItemCount, _buffer);
+
+                if (fetchStatus == 0)
                 {
+                    _itemCount = fetchItemCount;
+                    return new PdhCounterEnumerator(_buffer, (int)fetchItemCount);
+                }
+
+                if (fetchStatus == Pdh.PDH_MORE_DATA || fetchStatus == Pdh.PDH_INVALID_ARGUMENT)
+                {
+                    // Instance count increased between probe and fetch.
+                    // Discard fetchSize and re-probe from NULL/0 on next attempt.
                     Marshal.FreeHGlobal(_buffer);
                     _buffer = IntPtr.Zero;
                     _bufferCapacity = 0;
+                    _itemCount = 0;
+                    continue;
                 }
 
-                if (bufferSize == 0)
-                {
-                    break;
-                }
-
-                _buffer = Marshal.AllocHGlobal((int)bufferSize);
-                _bufferCapacity = bufferSize;
-                getStatus = _getArrayFunc(_handle, format, ref bufferSize, ref itemCount, _buffer);
-            }
-
-            if (getStatus != 0)
-            {
+                // Other unexpected failure status
+                Marshal.FreeHGlobal(_buffer);
+                _buffer = IntPtr.Zero;
+                _bufferCapacity = 0;
                 _itemCount = 0;
                 return new PdhCounterEnumerator(IntPtr.Zero, 0);
             }
 
-            _itemCount = itemCount;
-            return new PdhCounterEnumerator(_buffer, (int)itemCount);
+            _itemCount = 0;
+            return new PdhCounterEnumerator(IntPtr.Zero, 0);
         }
         catch
         {
+            if (_buffer != IntPtr.Zero)
+            {
+                Marshal.FreeHGlobal(_buffer);
+                _buffer = IntPtr.Zero;
+                _bufferCapacity = 0;
+            }
             _itemCount = 0;
             return new PdhCounterEnumerator(IntPtr.Zero, 0);
         }

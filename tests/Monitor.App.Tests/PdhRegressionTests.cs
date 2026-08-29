@@ -11,72 +11,70 @@ namespace Monitor.App.Tests;
 public sealed class PdhRegressionTests
 {
     [TestMethod]
-    public void PdhMultiCounter_BufferReuseAndReallocationOnSizeChange()
+    public void TestA_PdhMultiCounter_Reallocation_NeverTrustsReturnedBufferSizeOnInsufficientBuffer()
     {
         var currentItems = new (string Name, double Value, uint CStatus)[]
         {
             ("0,0", 25.5, Pdh.PDH_CSTATUS_VALID_DATA),
             ("0,1", 50.0, Pdh.PDH_CSTATUS_VALID_DATA),
-            ("0,2", 75.25, Pdh.PDH_CSTATUS_VALID_DATA),
         };
 
-        int getArrayCallCount = 0;
+        var callLog = new List<(IntPtr Buffer, uint InBufferSize, uint OutBufferSize, uint ReturnStatus)>();
 
         uint FakeGetArray(IntPtr hCounter, uint dwFormat, ref uint lpdwBufferSize, ref uint lpdwItemCount, IntPtr itemBuffer)
         {
-            getArrayCallCount++;
+            uint inSize = lpdwBufferSize;
             uint neededSize = CalculateNativeBufferSize(currentItems);
 
-            if (itemBuffer == IntPtr.Zero || lpdwBufferSize < neededSize)
+            // 1. NULL/0 probe: reliable neededSize query
+            if (itemBuffer == IntPtr.Zero && inSize == 0)
             {
                 lpdwBufferSize = neededSize;
+                callLog.Add((itemBuffer, inSize, lpdwBufferSize, Pdh.PDH_MORE_DATA));
                 return Pdh.PDH_MORE_DATA;
             }
 
-            WriteNativeBuffer(itemBuffer, currentItems);
-            lpdwItemCount = (uint)currentItems.Length;
-            return 0;
+            // 2. Insufficient non-zero buffer: return PDH_MORE_DATA with UNTRUSTED/POISON size
+            if (itemBuffer != IntPtr.Zero && inSize < neededSize)
+            {
+                lpdwBufferSize = 1; // Poison value! Must NOT be used for allocation
+                callLog.Add((itemBuffer, inSize, lpdwBufferSize, Pdh.PDH_MORE_DATA));
+                return Pdh.PDH_MORE_DATA;
+            }
+
+            // 3. Sufficient buffer
+            if (itemBuffer != IntPtr.Zero && inSize >= neededSize)
+            {
+                WriteNativeBuffer(itemBuffer, currentItems);
+                lpdwItemCount = (uint)currentItems.Length;
+                callLog.Add((itemBuffer, inSize, lpdwBufferSize, 0));
+                return 0;
+            }
+
+            callLog.Add((itemBuffer, inSize, lpdwBufferSize, Pdh.PDH_INVALID_ARGUMENT));
+            return Pdh.PDH_INVALID_ARGUMENT;
         }
 
         using var multiCounter = new PdhMultiCounter(@"\Processor Information(*)\% Processor Utility", new IntPtr(0x1234), FakeGetArray);
 
-        // 1. First sample: 3 items (initial size query + initial fill = 2 calls to native API)
-        var itemsList1 = new List<(string Name, double Value)>();
+        // 1. Initial sample: 2 items (2 calls: NULL/0 probe -> allocated fetch)
+        var list1 = new List<(string Name, double Value)>();
         foreach (PdhItemSpan item in multiCounter.Enumerate())
         {
-            itemsList1.Add((item.InstanceName.ToString(), item.Value));
+            list1.Add((item.InstanceName.ToString(), item.Value));
         }
 
-        Assert.AreEqual(3, itemsList1.Count);
-        Assert.AreEqual("0,0", itemsList1[0].Name);
-        Assert.AreEqual(25.5, itemsList1[0].Value, 0.001);
-        Assert.AreEqual("0,1", itemsList1[1].Name);
-        Assert.AreEqual(50.0, itemsList1[1].Value, 0.001);
-        Assert.AreEqual("0,2", itemsList1[2].Name);
-        Assert.AreEqual(75.25, itemsList1[2].Value, 0.001);
-        Assert.AreEqual(2, getArrayCallCount, "First sample requires 2 calls (size query + fetch)");
+        Assert.AreEqual(2, list1.Count);
+        Assert.AreEqual("0,0", list1[0].Name);
+        Assert.AreEqual(25.5, list1[0].Value, 0.001);
+        Assert.AreEqual("0,1", list1[1].Name);
+        Assert.AreEqual(50.0, list1[1].Value, 0.001);
+        Assert.AreEqual(2, callLog.Count);
+        Assert.AreEqual(IntPtr.Zero, callLog[0].Buffer);
+        Assert.AreEqual(0u, callLog[0].InBufferSize);
+        Assert.AreNotEqual(IntPtr.Zero, callLog[1].Buffer);
 
-        // 2. Second sample: 2 items (smaller size, existing buffer is reused directly in 1 call!)
-        currentItems = new (string Name, double Value, uint CStatus)[]
-        {
-            ("0,0", 12.0, Pdh.PDH_CSTATUS_VALID_DATA),
-            ("0,1", 34.0, Pdh.PDH_CSTATUS_VALID_DATA),
-        };
-
-        var itemsList2 = new List<(string Name, double Value)>();
-        foreach (PdhItemSpan item in multiCounter.Enumerate())
-        {
-            itemsList2.Add((item.InstanceName.ToString(), item.Value));
-        }
-
-        Assert.AreEqual(2, itemsList2.Count);
-        Assert.AreEqual("0,0", itemsList2[0].Name);
-        Assert.AreEqual(12.0, itemsList2[0].Value, 0.001);
-        Assert.AreEqual("0,1", itemsList2[1].Name);
-        Assert.AreEqual(34.0, itemsList2[1].Value, 0.001);
-        Assert.AreEqual(3, getArrayCallCount, "Second sample with smaller/equal size must reuse buffer in 1 call");
-
-        // 3. Third sample: 5 items (larger size, returns PDH_MORE_DATA, reallocates buffer and fetches)
+        // 2. Growth sample: 5 items (3 calls: reused fetch [fails with untrusted size] -> NULL/0 probe [reliable] -> reallocated fetch [success])
         currentItems = new (string Name, double Value, uint CStatus)[]
         {
             ("0,0", 10.0, Pdh.PDH_CSTATUS_VALID_DATA),
@@ -86,16 +84,33 @@ public sealed class PdhRegressionTests
             ("0,4", 50.0, Pdh.PDH_CSTATUS_VALID_DATA),
         };
 
-        var itemsList3 = new List<(string Name, double Value)>();
+        var list2 = new List<(string Name, double Value)>();
         foreach (PdhItemSpan item in multiCounter.Enumerate())
         {
-            itemsList3.Add((item.InstanceName.ToString(), item.Value));
+            list2.Add((item.InstanceName.ToString(), item.Value));
         }
 
-        Assert.AreEqual(5, itemsList3.Count);
-        Assert.AreEqual("0,4", itemsList3[4].Name);
-        Assert.AreEqual(50.0, itemsList3[4].Value, 0.001);
-        Assert.AreEqual(5, getArrayCallCount, "Third sample with larger size must reallocate (1 failed call + 1 reallocated fetch = 2 calls)");
+        Assert.AreEqual(5, list2.Count);
+        Assert.AreEqual("0,4", list2[4].Name);
+        Assert.AreEqual(50.0, list2[4].Value, 0.001);
+
+        // Assert native call sequence for growth:
+        Assert.AreEqual(5, callLog.Count, "Growth sample must take exactly 3 native calls (reused fetch + NULL/0 probe + fetch)");
+        Assert.AreNotEqual(IntPtr.Zero, callLog[2].Buffer, "Call 3 is reused buffer fetch");
+        Assert.AreEqual(1u, callLog[2].OutBufferSize, "Call 3 fake returned poison size 1");
+        Assert.AreEqual(IntPtr.Zero, callLog[3].Buffer, "Call 4 must strictly probe with NULL/0");
+        Assert.AreEqual(0u, callLog[3].InBufferSize, "Call 4 must pass inBufferSize == 0");
+        Assert.AreNotEqual(IntPtr.Zero, callLog[4].Buffer, "Call 5 is reallocated fetch");
+
+        // 3. Steady state sample: 5 items (1 call fast path)
+        var list3 = new List<(string Name, double Value)>();
+        foreach (PdhItemSpan item in multiCounter.Enumerate())
+        {
+            list3.Add((item.InstanceName.ToString(), item.Value));
+        }
+
+        Assert.AreEqual(5, list3.Count);
+        Assert.AreEqual(6, callLog.Count, "Subsequent steady state must take 1 native call");
 
         // 4. GetValues backward compatibility
         IReadOnlyList<PdhCounterItem> legacyValues = multiCounter.GetValues();
@@ -104,13 +119,301 @@ public sealed class PdhRegressionTests
         {
             Assert.AreEqual(currentItems[i].Name, legacyValues[i].InstanceName);
             Assert.AreEqual(currentItems[i].Value, legacyValues[i].Value, 0.001);
-            Assert.AreEqual(itemsList3[i].Name, legacyValues[i].InstanceName);
-            Assert.AreEqual(itemsList3[i].Value, legacyValues[i].Value, 0.001);
+            Assert.AreEqual(list3[i].Name, legacyValues[i].InstanceName);
+            Assert.AreEqual(list3[i].Value, legacyValues[i].Value, 0.001);
         }
     }
 
     [TestMethod]
-    public void PdhCounterEnumerator_HandlesErrorCStatusAndNullNames()
+    public void TestB_PdhMultiCounter_Reallocation_HandlesPdhInvalidArgumentOnInsufficientBuffer()
+    {
+        var currentItems = new (string Name, double Value, uint CStatus)[]
+        {
+            ("0,0", 25.5, Pdh.PDH_CSTATUS_VALID_DATA),
+            ("0,1", 50.0, Pdh.PDH_CSTATUS_VALID_DATA),
+        };
+
+        var callLog = new List<(IntPtr Buffer, uint InBufferSize, uint ReturnStatus)>();
+
+        uint FakeGetArray(IntPtr hCounter, uint dwFormat, ref uint lpdwBufferSize, ref uint lpdwItemCount, IntPtr itemBuffer)
+        {
+            uint inSize = lpdwBufferSize;
+            uint neededSize = CalculateNativeBufferSize(currentItems);
+
+            if (itemBuffer == IntPtr.Zero && inSize == 0)
+            {
+                lpdwBufferSize = neededSize;
+                callLog.Add((itemBuffer, inSize, Pdh.PDH_MORE_DATA));
+                return Pdh.PDH_MORE_DATA;
+            }
+
+            if (itemBuffer != IntPtr.Zero && inSize < neededSize)
+            {
+                // Return PDH_INVALID_ARGUMENT on insufficient buffer (Windows compatibility behavior)
+                callLog.Add((itemBuffer, inSize, Pdh.PDH_INVALID_ARGUMENT));
+                return Pdh.PDH_INVALID_ARGUMENT;
+            }
+
+            if (itemBuffer != IntPtr.Zero && inSize >= neededSize)
+            {
+                WriteNativeBuffer(itemBuffer, currentItems);
+                lpdwItemCount = (uint)currentItems.Length;
+                callLog.Add((itemBuffer, inSize, 0));
+                return 0;
+            }
+
+            callLog.Add((itemBuffer, inSize, Pdh.PDH_INVALID_ARGUMENT));
+            return Pdh.PDH_INVALID_ARGUMENT;
+        }
+
+        using var multiCounter = new PdhMultiCounter(@"\Processor Information(*)\% Processor Utility", new IntPtr(0x1234), FakeGetArray);
+
+        // 1. Initial 2 items
+        var list1 = new List<(string Name, double Value)>();
+        foreach (PdhItemSpan item in multiCounter.Enumerate())
+        {
+            list1.Add((item.InstanceName.ToString(), item.Value));
+        }
+
+        Assert.AreEqual(2, list1.Count);
+        Assert.AreEqual(2, callLog.Count);
+
+        // 2. Growth to 4 items -> triggers PDH_INVALID_ARGUMENT on reused buffer -> probes NULL/0 -> reallocates
+        currentItems = new (string Name, double Value, uint CStatus)[]
+        {
+            ("0,0", 11.0, Pdh.PDH_CSTATUS_VALID_DATA),
+            ("0,1", 22.0, Pdh.PDH_CSTATUS_VALID_DATA),
+            ("0,2", 33.0, Pdh.PDH_CSTATUS_VALID_DATA),
+            ("0,3", 44.0, Pdh.PDH_CSTATUS_VALID_DATA),
+        };
+
+        var list2 = new List<(string Name, double Value)>();
+        foreach (PdhItemSpan item in multiCounter.Enumerate())
+        {
+            list2.Add((item.InstanceName.ToString(), item.Value));
+        }
+
+        Assert.AreEqual(4, list2.Count);
+        Assert.AreEqual("0,3", list2[3].Name);
+        Assert.AreEqual(44.0, list2[3].Value, 0.001);
+
+        Assert.AreEqual(5, callLog.Count);
+        Assert.AreEqual(Pdh.PDH_INVALID_ARGUMENT, callLog[2].ReturnStatus);
+        Assert.AreEqual(IntPtr.Zero, callLog[3].Buffer);
+        Assert.AreEqual(0u, callLog[3].InBufferSize);
+        Assert.AreEqual(0u, callLog[4].ReturnStatus);
+
+        // 3. Subsequent sample uses new capacity in 1 call
+        var list3 = new List<(string Name, double Value)>();
+        foreach (PdhItemSpan item in multiCounter.Enumerate())
+        {
+            list3.Add((item.InstanceName.ToString(), item.Value));
+        }
+
+        Assert.AreEqual(4, list3.Count);
+        Assert.AreEqual(6, callLog.Count);
+    }
+
+    [TestMethod]
+    public void TestC_PdhMultiCounter_Reallocation_HandlesGrowthRaceBetweenProbeAndFetch()
+    {
+        var smallItems = new (string Name, double Value, uint CStatus)[]
+        {
+            ("0,0", 1.0, Pdh.PDH_CSTATUS_VALID_DATA),
+            ("0,1", 2.0, Pdh.PDH_CSTATUS_VALID_DATA),
+        };
+        var mediumItems = new (string Name, double Value, uint CStatus)[]
+        {
+            ("0,0", 10.0, Pdh.PDH_CSTATUS_VALID_DATA),
+            ("0,1", 20.0, Pdh.PDH_CSTATUS_VALID_DATA),
+            ("0,2", 30.0, Pdh.PDH_CSTATUS_VALID_DATA),
+        };
+        var largeItems = new (string Name, double Value, uint CStatus)[]
+        {
+            ("0,0", 100.0, Pdh.PDH_CSTATUS_VALID_DATA),
+            ("0,1", 200.0, Pdh.PDH_CSTATUS_VALID_DATA),
+            ("0,2", 300.0, Pdh.PDH_CSTATUS_VALID_DATA),
+            ("0,3", 400.0, Pdh.PDH_CSTATUS_VALID_DATA),
+            ("0,4", 500.0, Pdh.PDH_CSTATUS_VALID_DATA),
+        };
+
+        var currentItems = smallItems;
+        var callLog = new List<(IntPtr Buffer, uint InBufferSize, uint ReturnStatus)>();
+        bool raceTriggered = false;
+
+        uint RaceGetArray(IntPtr hCounter, uint dwFormat, ref uint lpdwBufferSize, ref uint lpdwItemCount, IntPtr itemBuffer)
+        {
+            uint inSize = lpdwBufferSize;
+            uint neededSize = CalculateNativeBufferSize(currentItems);
+
+            if (itemBuffer == IntPtr.Zero && inSize == 0)
+            {
+                // After first probe returns medium size, simulate race: instances increase to large before fetch!
+                if (!raceTriggered)
+                {
+                    raceTriggered = true;
+                    lpdwBufferSize = CalculateNativeBufferSize(mediumItems);
+                    currentItems = largeItems; // Race: grown to large before fetch!
+                    callLog.Add((itemBuffer, inSize, Pdh.PDH_MORE_DATA));
+                    return Pdh.PDH_MORE_DATA;
+                }
+
+                lpdwBufferSize = neededSize;
+                callLog.Add((itemBuffer, inSize, Pdh.PDH_MORE_DATA));
+                return Pdh.PDH_MORE_DATA;
+            }
+
+            if (itemBuffer != IntPtr.Zero && inSize < neededSize)
+            {
+                lpdwBufferSize = 1; // poison
+                callLog.Add((itemBuffer, inSize, Pdh.PDH_MORE_DATA));
+                return Pdh.PDH_MORE_DATA;
+            }
+
+            if (itemBuffer != IntPtr.Zero && inSize >= neededSize)
+            {
+                WriteNativeBuffer(itemBuffer, currentItems);
+                lpdwItemCount = (uint)currentItems.Length;
+                callLog.Add((itemBuffer, inSize, 0));
+                return 0;
+            }
+
+            callLog.Add((itemBuffer, inSize, Pdh.PDH_INVALID_ARGUMENT));
+            return Pdh.PDH_INVALID_ARGUMENT;
+        }
+
+        using var raceCounter = new PdhMultiCounter(@"\Processor Information(*)\% Processor Utility", new IntPtr(0x5678), RaceGetArray);
+
+        var listRace = new List<(string Name, double Value)>();
+        foreach (PdhItemSpan item in raceCounter.Enumerate())
+        {
+            listRace.Add((item.InstanceName.ToString(), item.Value));
+        }
+
+        Assert.AreEqual(5, listRace.Count);
+        Assert.AreEqual("0,4", listRace[4].Name);
+        Assert.AreEqual(500.0, listRace[4].Value, 0.001);
+    }
+
+    [TestMethod]
+    public void TestD_PdhMultiCounter_RetryLimit_ZeroSize_And_DisposalSafety()
+    {
+        // 1. Retry limit: always failing probe/fetch
+        int callCount = 0;
+        uint FailingGetArray(IntPtr hCounter, uint dwFormat, ref uint lpdwBufferSize, ref uint lpdwItemCount, IntPtr itemBuffer)
+        {
+            callCount++;
+            if (itemBuffer == IntPtr.Zero)
+            {
+                lpdwBufferSize = 100;
+                return Pdh.PDH_MORE_DATA;
+            }
+            return Pdh.PDH_MORE_DATA; // always fail fetch
+        }
+
+        using (var failingCounter = new PdhMultiCounter(@"\test", new IntPtr(0x111), FailingGetArray))
+        {
+            int count = 0;
+            foreach (PdhItemSpan _ in failingCounter.Enumerate()) count++;
+            Assert.AreEqual(0, count);
+            Assert.IsTrue(callCount <= 7, "Must terminate within bounded retry attempts");
+        }
+
+        // 2. Zero size probe
+        uint ZeroSizeGetArray(IntPtr hCounter, uint dwFormat, ref uint lpdwBufferSize, ref uint lpdwItemCount, IntPtr itemBuffer)
+        {
+            lpdwBufferSize = 0;
+            return Pdh.PDH_MORE_DATA;
+        }
+
+        using (var zeroCounter = new PdhMultiCounter(@"\test", new IntPtr(0x222), ZeroSizeGetArray))
+        {
+            int count = 0;
+            foreach (PdhItemSpan _ in zeroCounter.Enumerate()) count++;
+            Assert.AreEqual(0, count);
+        }
+
+        // 3. Double dispose safety
+        var disposableCounter = new PdhMultiCounter(@"\test", new IntPtr(0x333), FailingGetArray);
+        disposableCounter.Dispose();
+        disposableCounter.Dispose(); // must not throw
+
+        // 4. PdhQuery dispose tracking
+        using (var query = PdhQuery.TryCreate())
+        {
+            // Query disposal must not throw
+        }
+    }
+
+    [TestMethod]
+    public void TestE_PdhNativeLayout_AbiInvariants_And_NullNameHandling()
+    {
+        // 1. ABI sizes in x64
+        Assert.AreEqual(16, Marshal.SizeOf<PDH_FMT_COUNTERVALUE>());
+        Assert.AreEqual(24, Marshal.SizeOf<PDH_FMT_COUNTERVALUE_ITEM_W>());
+
+        // 2. Exact offset calculation check
+        var rawItems = new (string Name, double Value, uint CStatus)[]
+        {
+            ("first_inst", 10.0, Pdh.PDH_CSTATUS_VALID_DATA),
+            ("second_inst", 20.0, Pdh.PDH_CSTATUS_VALID_DATA),
+            ("third_inst", 30.0, Pdh.PDH_CSTATUS_VALID_DATA),
+        };
+
+        uint bufferSize = CalculateNativeBufferSize(rawItems);
+        IntPtr buffer = Marshal.AllocHGlobal((int)bufferSize);
+        try
+        {
+            WriteNativeBuffer(buffer, rawItems);
+
+            int itemSize = Marshal.SizeOf<PDH_FMT_COUNTERVALUE_ITEM_W>();
+            int expectedOffset0 = rawItems.Length * itemSize; // 3 * 24 = 72
+            int expectedOffset1 = expectedOffset0 + ("first_inst\0".Length * sizeof(char));
+            int expectedOffset2 = expectedOffset1 + ("second_inst\0".Length * sizeof(char));
+
+            PDH_FMT_COUNTERVALUE_ITEM_W item0 = Marshal.PtrToStructure<PDH_FMT_COUNTERVALUE_ITEM_W>(buffer);
+            PDH_FMT_COUNTERVALUE_ITEM_W item1 = Marshal.PtrToStructure<PDH_FMT_COUNTERVALUE_ITEM_W>(IntPtr.Add(buffer, itemSize));
+            PDH_FMT_COUNTERVALUE_ITEM_W item2 = Marshal.PtrToStructure<PDH_FMT_COUNTERVALUE_ITEM_W>(IntPtr.Add(buffer, itemSize * 2));
+
+            Assert.AreEqual(IntPtr.Add(buffer, expectedOffset0), item0.szName, "First szName points to end of item array");
+            Assert.AreEqual(IntPtr.Add(buffer, expectedOffset1), item1.szName, "Second szName points after first NUL-terminated string");
+            Assert.AreEqual(IntPtr.Add(buffer, expectedOffset2), item2.szName, "Third szName points after second NUL-terminated string");
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(buffer);
+        }
+
+        // 3. Null szName handling (item with szName == IntPtr.Zero)
+        int singleItemSize = Marshal.SizeOf<PDH_FMT_COUNTERVALUE_ITEM_W>();
+        IntPtr nullNameBuffer = Marshal.AllocHGlobal(singleItemSize * 2);
+        try
+        {
+            var itemValid = new PDH_FMT_COUNTERVALUE_ITEM_W
+            {
+                szName = IntPtr.Zero, // Explicitly NULL!
+                FmtValue = new PDH_FMT_COUNTERVALUE
+                {
+                    CStatus = Pdh.PDH_CSTATUS_VALID_DATA,
+                    doubleValue = 99.5,
+                },
+            };
+            Marshal.StructureToPtr(itemValid, nullNameBuffer, false);
+
+            var enumerator = new PdhCounterEnumerator(nullNameBuffer, 1);
+            Assert.IsTrue(enumerator.MoveNext());
+            Assert.IsTrue(enumerator.Current.InstanceName.IsEmpty, "NULL szName must yield empty ReadOnlySpan<char>");
+            Assert.AreEqual(99.5, enumerator.Current.Value, 0.001);
+            Assert.IsFalse(enumerator.MoveNext());
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(nullNameBuffer);
+        }
+    }
+
+    [TestMethod]
+    public void PdhCounterEnumerator_HandlesErrorCStatus()
     {
         var rawItems = new (string Name, double Value, uint CStatus)[]
         {
