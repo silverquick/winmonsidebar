@@ -58,9 +58,10 @@ dotnet build WindowsMonitor.sln -c Debug
 dotnet publish src\Monitor.App -c Release -r win-x64 --self-contained -p:PublishSingleFile=true -o out
 ```
 
-`out\Monitor.App.exe`（約 129MB）に .NET ランタイムごと同梱される。WPF のネイティブ DLL
-5 個（`wpfgfx_cor3.dll` 等）は単一ファイルに埋め込めないため exe と同じ場所に並ぶ。この 6 個を
-まとめて配置すれば .NET のインストールなしで動く。
+`out\Monitor.App.exe`（約 130MB）に .NET ランタイムごと同梱される。WPF・SkiaSharp 等の
+ネイティブ DLL（`wpfgfx_cor3.dll` / `PresentationNative_cor3.dll` / `D3DCompiler_47_cor3.dll` 等）は
+単一ファイルに埋め込めないため exe と同じ場所に並ぶ。`out\` の内容を丸ごと配置すれば
+.NET のインストールなしで動く（`*.pdb` は配布に不要）。
 
 ## 表示する情報
 
@@ -161,6 +162,32 @@ SSD は 70°C 前後、HDD は 55°C 前後と、機種によって「正常」�
 同じ色で、「書き込み量」と「警告」が同じピンクという衝突が起きていた。そのため注意（琥珀
 `#F0C23C`）と危険（赤 `#F04A4A`）の2色に分離した。琥珀は `DiskAccentBrush` のオレンジと
 色相が近すぎるため、G成分を持ち上げて金色寄りにずらしてある。
+
+## パフォーマンス
+
+常時デスクトップ端に常駐するシステムモニタとして、CPU・メモリ負荷および UI スレッドの停滞を
+極限まで抑える設計を採用している。第1弾の基盤設計に加え、監査に基づく最適化を施している。
+
+### 計測・描画の基盤設計
+
+- **レーン分割サンプリング**: 高速（1秒: CPU/GPU/RAM/Disk/Net）、中速（5秒: ボリューム容量）、低速（30秒: 静的構成・温度等）に分離し、重い WMI や IOCTL による不要な高頻度ポーリングを抑止。
+- **折りたたみセクションの詳細サンプリング停止**: 非表示のセクションはプロバイダ層での重い取得処理（プロセス一覧やモジュール情報等）そのものをスキップ。
+- **スナップショット pull モデル**: プロバイダは不変スナップショットを生成して保持し、UI 側が必要なタイミングで pull する疎結合構造によりスレッド競合と UI 描画ブロックを排除。
+- **ディスク温度・ブロッキング処理のキャッシュ**: 応答が遅延・ブロックしうる SMART/IOCTL 取得をバックグラウンドスレッドで実行し、直前値をキャッシュして即時返却。
+- **描画リソースのキャッシュ**: `Sparkline` や `CoreGrid` 等のカスタムコントロールにおいて、WPF の `Brush` / `Pen` / `StreamGeometry` の毎フレーム再生成を防止。
+
+### ゼロアロケーションと常時監視の最適化
+
+毎秒サンプリング時の GC 負荷と Win32 API 呼び出しのオーバーヘッドを徹底的に削減している。
+
+- **wildcard PDH のアロケーション除去**: `PdhMultiCounter` が結果を再利用ネイティブバッファとゼロアロケーション列挙（`Enumerate()` / `PdhItemSpan`）で返す。バッファ不足時は PDH の ABI 仕様に準拠して `NULL`/0 で必要サイズを再照会。CPU コア別・GPU Engine・ディスク R/W/Busy の毎秒取得による文字列・オブジェクト生成を排除。
+- **折りたたみ中セクションの UI 更新分離**: `SidebarViewModel` の更新を「見出し要約・警告レベル（常時更新）」と「展開時のみ更新する詳細（履歴コピー・詳細文字列・行生成）」に分離。折りたたみ中は詳細更新をスキップし、展開された瞬間に最新スナップショットから即時反映。
+- **プロセス上位 K 件のみ生成**: 全プロセスの CPU 時間を走査して順位精度を保ちつつ、`ProcessInfo` の実体化と並べ替えを bounded min-heap により表示件数 K 件（`TopProcessCount`）のみに限定。
+- **未参照 GPU メトリクス・重複取得の除去**: App 層で未参照の `Shared Usage`（wildcard PDH）の取得を停止し、PDH と重複していた NVAPI 経由の使用率・メモリの毎秒取得を削減。
+- **CPU コア instance 比較のゼロアロケーション化**: instance 名を文字列分割（`Split(',')`）せず `TryParseCoreInstance` で数値キーへ直接パースしてソート。
+- **ディスク静的ボリューム情報のキャッシュ**: ボリューム一覧・表示名・容量などの静的構成を 30 秒更新時のみ構築し、毎秒の `Sample` では単一参照の atomic 交換により再利用。
+- **GPU ベンダー初期化のバックグラウンド遅延化**: NVAPI/NVML の初期化を遅延ファクトリ化しバックグラウンドで実行。初回ウィンドウ表示のクリティカルパスからネイティブ DLL の cold load を排除。
+- **フルスクリーン判定のキャッシュ**: 1 秒ポーリング時に毎回取得していた shell HWND、クラス名、サイドバーモニタ矩形をキャッシュし、ディスプレイ/DPI/AppBar 位置変更イベントでのみ無効化。
 
 ## 温度の取得可否
 
@@ -310,7 +337,7 @@ winmonsidebar/
 | GPU アダプタ名・VRAM 総量 | DXGI `IDXGIAdapter1::GetDesc1`（vtable 直呼び） |
 | GPU 温度・ファン・クロック | NVAPI |
 | GPU 電力 | NVML |
-| プロセス | `Process` + `GetProcessTimes()` / `GetProcessIoCounters()` |
+| プロセス | `Process` + `GetProcessTimes()` |
 | AppBar | `SHAppBarMessage()` |
 | 見た目（Acrylic・ダーク） | `DwmSetWindowAttribute()` |
 
@@ -392,7 +419,10 @@ AppBar にはそのための通知 `ABN_FULLSCREENAPP` があるが、Windows 10
 AppBar で領域を確保していてもモニタ矩形との比較で判定できる。デスクトップ（`Progman` /
 `WorkerW`）とタスクバー（`Shell_TrayWnd`）は常に画面を覆っているため除外する。
 `ABN_FULLSCREENAPP` を受け取ったときも同じ判定処理を通し、通知とポーリングで判断が
-食い違わないようにしている。
+食い違わないようにしている。なお、ポーリング時のオーバーヘッドを抑えるため、シェル HWND や
+除外クラス名、サイドバー自身のモニタ矩形などの不変情報はキャッシュし、ディスプレイ構成や
+DPI、AppBar 位置の変更イベント時のみ無効化している（判定精度を保つため前面ウィンドウ矩形と
+モニタの照会は毎秒行う）。
 
 復帰時は、利用者が右クリックメニューで最前面表示を切っている場合に勝手に戻さないよう
 `Window.Topmost` を見てから戻す。
