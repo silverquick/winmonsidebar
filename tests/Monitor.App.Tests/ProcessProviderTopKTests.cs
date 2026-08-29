@@ -101,6 +101,37 @@ public sealed class ProcessProviderTopKTests
     }
 
     [TestMethod]
+    public void SelectTopCandidates_WhenKIsGreaterThanCandidateCount_ReturnsAllCandidatesInCorrectOrderWithoutThrowing()
+    {
+        // 候補数（3件）より K（10件）が大きい場合、例外を投げずに全候補（3件）が
+        // CPU% 降順（同率は PID 昇順）で正しく返ることを決定論的に検証する。
+        var candidates = new[]
+        {
+            new ProcessProvider.ProcessCandidate(0, 101, 15.0),
+            new ProcessProvider.ProcessCandidate(1, 102, 60.0),
+            new ProcessProvider.ProcessCandidate(2, 103, 30.0),
+        };
+
+        ProcessProvider.ProcessCandidate[] top = ProcessProvider.SelectTopCandidates(candidates, topCount: 10);
+
+        Assert.AreEqual(3, top.Length, "返却件数は元の候補数（3件）と一致すべき。");
+        Assert.AreEqual(102, top[0].Pid);
+        Assert.AreEqual(60.0, top[0].CpuPercent, 0.0001);
+
+        Assert.AreEqual(103, top[1].Pid);
+        Assert.AreEqual(30.0, top[1].CpuPercent, 0.0001);
+
+        Assert.AreEqual(101, top[2].Pid);
+        Assert.AreEqual(15.0, top[2].CpuPercent, 0.0001);
+
+        // 候補数が 0 件の場合も例外を投げずに要素数 0 の配列が返ることを検証
+        ProcessProvider.ProcessCandidate[] emptyTop = ProcessProvider.SelectTopCandidates(
+            Array.Empty<ProcessProvider.ProcessCandidate>(),
+            topCount: 5);
+        Assert.AreEqual(0, emptyTop.Length);
+    }
+
+    [TestMethod]
     public void CalculateCpuPercent_PidReuse_DoesNotCalculateDiffAndReturnsZero()
     {
         var prevSamples = new Dictionary<int, ProcessProvider.PrevSample>
