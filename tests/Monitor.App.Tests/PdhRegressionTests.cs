@@ -238,35 +238,37 @@ public sealed class PdhRegressionTests
         };
 
         var currentItems = smallItems;
-        var callLog = new List<(IntPtr Buffer, uint InBufferSize, uint ReturnStatus)>();
+        var callLog = new List<(IntPtr Buffer, uint InBufferSize, uint OutBufferSize, uint ReturnStatus)>();
         bool raceTriggered = false;
 
-        uint RaceGetArray(IntPtr hCounter, uint dwFormat, ref uint lpdwBufferSize, ref uint lpdwItemCount, IntPtr itemBuffer)
+        uint FakeGetArray(IntPtr hCounter, uint dwFormat, ref uint lpdwBufferSize, ref uint lpdwItemCount, IntPtr itemBuffer)
         {
             uint inSize = lpdwBufferSize;
             uint neededSize = CalculateNativeBufferSize(currentItems);
 
             if (itemBuffer == IntPtr.Zero && inSize == 0)
             {
-                // After first probe returns medium size, simulate race: instances increase to large before fetch!
-                if (!raceTriggered)
+                // Step 2 in FIX.md: NULL/0 probe returns size N for medium (3 items)
+                if (currentItems == mediumItems && !raceTriggered)
                 {
                     raceTriggered = true;
-                    lpdwBufferSize = CalculateNativeBufferSize(mediumItems);
-                    currentItems = largeItems; // Race: grown to large before fetch!
-                    callLog.Add((itemBuffer, inSize, Pdh.PDH_MORE_DATA));
+                    lpdwBufferSize = neededSize;
+                    // Step 3 in FIX.md: right before fetch with N bytes, instance count grows further to large (5 items)!
+                    currentItems = largeItems;
+                    callLog.Add((itemBuffer, inSize, lpdwBufferSize, Pdh.PDH_MORE_DATA));
                     return Pdh.PDH_MORE_DATA;
                 }
 
                 lpdwBufferSize = neededSize;
-                callLog.Add((itemBuffer, inSize, Pdh.PDH_MORE_DATA));
+                callLog.Add((itemBuffer, inSize, lpdwBufferSize, Pdh.PDH_MORE_DATA));
                 return Pdh.PDH_MORE_DATA;
             }
 
             if (itemBuffer != IntPtr.Zero && inSize < neededSize)
             {
-                lpdwBufferSize = 1; // poison
-                callLog.Add((itemBuffer, inSize, Pdh.PDH_MORE_DATA));
+                // Insufficient buffer: returns PDH_MORE_DATA with untrusted poison size
+                lpdwBufferSize = 1;
+                callLog.Add((itemBuffer, inSize, lpdwBufferSize, Pdh.PDH_MORE_DATA));
                 return Pdh.PDH_MORE_DATA;
             }
 
@@ -274,74 +276,183 @@ public sealed class PdhRegressionTests
             {
                 WriteNativeBuffer(itemBuffer, currentItems);
                 lpdwItemCount = (uint)currentItems.Length;
-                callLog.Add((itemBuffer, inSize, 0));
+                callLog.Add((itemBuffer, inSize, lpdwBufferSize, 0));
                 return 0;
             }
 
-            callLog.Add((itemBuffer, inSize, Pdh.PDH_INVALID_ARGUMENT));
+            callLog.Add((itemBuffer, inSize, lpdwBufferSize, Pdh.PDH_INVALID_ARGUMENT));
             return Pdh.PDH_INVALID_ARGUMENT;
         }
 
-        using var raceCounter = new PdhMultiCounter(@"\Processor Information(*)\% Processor Utility", new IntPtr(0x5678), RaceGetArray);
+        using var multiCounter = new PdhMultiCounter(@"\Processor Information(*)\% Processor Utility", new IntPtr(0x1234), FakeGetArray);
+
+        // Step 1: 既存 buffer を確保した状態にする（small 2 items）
+        var list1 = new List<(string Name, double Value)>();
+        foreach (PdhItemSpan item in multiCounter.Enumerate())
+        {
+            list1.Add((item.InstanceName.ToString(), item.Value));
+        }
+
+        Assert.AreEqual(2, list1.Count);
+        Assert.AreEqual(2, callLog.Count);
+        Assert.AreEqual(IntPtr.Zero, callLog[0].Buffer); // Call 1: NULL/0 probe (small)
+        Assert.AreNotEqual(IntPtr.Zero, callLog[1].Buffer); // Call 2: fetch (small)
+
+        // Step 2 & 3: 次の sample で medium へ増加するが、probe 後 fetch 直前に large へさらに増加する race
+        currentItems = mediumItems;
 
         var listRace = new List<(string Name, double Value)>();
-        foreach (PdhItemSpan item in raceCounter.Enumerate())
+        foreach (PdhItemSpan item in multiCounter.Enumerate())
         {
             listRace.Add((item.InstanceName.ToString(), item.Value));
         }
 
+        // Step 5: 上限内で最終集合（5 items）がすべて返ることを assert
         Assert.AreEqual(5, listRace.Count);
+        Assert.AreEqual("0,0", listRace[0].Name);
+        Assert.AreEqual(100.0, listRace[0].Value, 0.001);
         Assert.AreEqual("0,4", listRace[4].Name);
         Assert.AreEqual(500.0, listRace[4].Value, 0.001);
+
+        // Call log sequence assertion:
+        // Call 3 (attempt 0, reused fetch): small capacity -> fails with PDH_MORE_DATA (poison 1)
+        // Call 4 (attempt 0, probe): NULL/0 -> returns medium capacity N, race triggers currentItems = large
+        // Call 5 (attempt 0, fetch): fetch with medium capacity N -> fails with PDH_MORE_DATA (poison 1) because actual is large
+        // Call 6 (attempt 1, probe): NULL/0 -> returns large capacity
+        // Call 7 (attempt 1, fetch): fetch with large capacity -> returns 0 (ERROR_SUCCESS)
+        Assert.AreEqual(7, callLog.Count, "Growth race must take exactly 5 calls (2 initial + 5 race calls)");
+
+        // Call 3
+        Assert.AreNotEqual(IntPtr.Zero, callLog[2].Buffer, "Call 3 is reused fetch with old small buffer");
+        Assert.AreEqual(1u, callLog[2].OutBufferSize, "Call 3 returned untrusted poison size 1");
+        Assert.AreEqual(Pdh.PDH_MORE_DATA, callLog[2].ReturnStatus);
+
+        // Call 4
+        Assert.AreEqual(IntPtr.Zero, callLog[3].Buffer, "Call 4 must be NULL/0 probe");
+        Assert.AreEqual(0u, callLog[3].InBufferSize);
+        Assert.AreEqual(CalculateNativeBufferSize(mediumItems), callLog[3].OutBufferSize);
+        Assert.AreEqual(Pdh.PDH_MORE_DATA, callLog[3].ReturnStatus);
+
+        // Call 5 (Race failure)
+        Assert.AreNotEqual(IntPtr.Zero, callLog[4].Buffer, "Call 5 is fetch with medium buffer");
+        Assert.AreEqual(CalculateNativeBufferSize(mediumItems), callLog[4].InBufferSize);
+        Assert.AreEqual(1u, callLog[4].OutBufferSize, "Call 5 returned untrusted poison size 1");
+        Assert.AreEqual(Pdh.PDH_MORE_DATA, callLog[4].ReturnStatus);
+
+        // Call 6 (Re-probe after race failure)
+        Assert.AreEqual(IntPtr.Zero, callLog[5].Buffer, "Call 6 must re-probe with NULL/0");
+        Assert.AreEqual(0u, callLog[5].InBufferSize);
+        Assert.AreEqual(CalculateNativeBufferSize(largeItems), callLog[5].OutBufferSize);
+        Assert.AreEqual(Pdh.PDH_MORE_DATA, callLog[5].ReturnStatus);
+
+        // Call 7 (Final successful fetch)
+        Assert.AreNotEqual(IntPtr.Zero, callLog[6].Buffer, "Call 7 is fetch with large buffer");
+        Assert.AreEqual(CalculateNativeBufferSize(largeItems), callLog[6].InBufferSize);
+        Assert.AreEqual(0u, callLog[6].ReturnStatus);
     }
 
     [TestMethod]
     public void TestD_PdhMultiCounter_RetryLimit_ZeroSize_And_DisposalSafety()
     {
-        // 1. Retry limit: always failing probe/fetch
+        // 1. 毎回増加して成功しない fake で、規定 attempt 数（3 回）を超えて呼び続けず空列を返す
         int callCount = 0;
-        uint FailingGetArray(IntPtr hCounter, uint dwFormat, ref uint lpdwBufferSize, ref uint lpdwItemCount, IntPtr itemBuffer)
+        var retryCallLog = new List<(IntPtr Buffer, uint InBufferSize, uint ReturnStatus)>();
+
+        uint AlwaysGrowingFailGetArray(IntPtr hCounter, uint dwFormat, ref uint lpdwBufferSize, ref uint lpdwItemCount, IntPtr itemBuffer)
         {
             callCount++;
-            if (itemBuffer == IntPtr.Zero)
+            uint inSize = lpdwBufferSize;
+            if (itemBuffer == IntPtr.Zero && inSize == 0)
             {
+                // Probe always reports size 100
                 lpdwBufferSize = 100;
+                retryCallLog.Add((itemBuffer, inSize, Pdh.PDH_MORE_DATA));
                 return Pdh.PDH_MORE_DATA;
             }
-            return Pdh.PDH_MORE_DATA; // always fail fetch
+
+            // Fetch always fails with PDH_MORE_DATA (untrusted poison size 1)
+            lpdwBufferSize = 1;
+            retryCallLog.Add((itemBuffer, inSize, Pdh.PDH_MORE_DATA));
+            return Pdh.PDH_MORE_DATA;
         }
 
-        using (var failingCounter = new PdhMultiCounter(@"\test", new IntPtr(0x111), FailingGetArray))
+        using (var failingCounter = new PdhMultiCounter(@"\test", new IntPtr(0x111), AlwaysGrowingFailGetArray))
         {
-            int count = 0;
-            foreach (PdhItemSpan _ in failingCounter.Enumerate()) count++;
-            Assert.AreEqual(0, count);
-            Assert.IsTrue(callCount <= 7, "Must terminate within bounded retry attempts");
+            var results = new List<(string Name, double Value)>();
+            foreach (PdhItemSpan item in failingCounter.Enumerate())
+            {
+                results.Add((item.InstanceName.ToString(), item.Value));
+            }
+
+            Assert.AreEqual(0, results.Count, "Must return empty enumerator when retry limit is exceeded");
+            // maxAttempts = 3: attempt 0 (probe + fetch) + attempt 1 (probe + fetch) + attempt 2 (probe + fetch) = 6 calls total
+            Assert.AreEqual(6, callCount, "Must make exactly 2 calls per attempt * 3 attempts = 6 calls and terminate");
+            Assert.AreEqual(6, retryCallLog.Count);
+            for (int attempt = 0; attempt < 3; attempt++)
+            {
+                Assert.AreEqual(IntPtr.Zero, retryCallLog[attempt * 2].Buffer, $"Attempt {attempt} must probe with NULL/0");
+                Assert.AreEqual(0u, retryCallLog[attempt * 2].InBufferSize);
+                Assert.AreNotEqual(IntPtr.Zero, retryCallLog[attempt * 2 + 1].Buffer, $"Attempt {attempt} must fetch with allocated buffer");
+            }
         }
 
-        // 2. Zero size probe
+        // 2. NULL/0 probe が PDH_MORE_DATA だが required size 0 を返した場合、allocation せず空列を返す
+        int zeroProbeCallCount = 0;
         uint ZeroSizeGetArray(IntPtr hCounter, uint dwFormat, ref uint lpdwBufferSize, ref uint lpdwItemCount, IntPtr itemBuffer)
         {
-            lpdwBufferSize = 0;
-            return Pdh.PDH_MORE_DATA;
+            zeroProbeCallCount++;
+            if (itemBuffer == IntPtr.Zero)
+            {
+                lpdwBufferSize = 0; // Size 0 returned from probe!
+                return Pdh.PDH_MORE_DATA;
+            }
+
+            Assert.Fail("Must not attempt to fetch or allocate when probe returned size 0");
+            return 0;
         }
 
         using (var zeroCounter = new PdhMultiCounter(@"\test", new IntPtr(0x222), ZeroSizeGetArray))
         {
-            int count = 0;
-            foreach (PdhItemSpan _ in zeroCounter.Enumerate()) count++;
-            Assert.AreEqual(0, count);
+            var results = new List<(string Name, double Value)>();
+            foreach (PdhItemSpan item in zeroCounter.Enumerate())
+            {
+                results.Add((item.InstanceName.ToString(), item.Value));
+            }
+
+            Assert.AreEqual(0, results.Count, "Must return empty enumerator when probe returns required size 0");
+            Assert.AreEqual(1, zeroProbeCallCount, "Must terminate after probe without calling fetch");
         }
 
-        // 3. Double dispose safety
-        var disposableCounter = new PdhMultiCounter(@"\test", new IntPtr(0x333), FailingGetArray);
-        disposableCounter.Dispose();
-        disposableCounter.Dispose(); // must not throw
+        // 3. failure 後の Dispose() と二重 Dispose() が throw しない
+        var failureCounter = new PdhMultiCounter(@"\test", new IntPtr(0x333), AlwaysGrowingFailGetArray);
+        foreach (PdhItemSpan _ in failureCounter.Enumerate()) { }
+        failureCounter.Dispose();
+        failureCounter.Dispose(); // second Dispose() must be idempotent and not throw
 
-        // 4. PdhQuery dispose tracking
+        // 4. PdhQuery.Dispose() が所有する複数 PdhMultiCounter の buffer を解放し、counter 側の後続 Dispose() でも二重 free しない
         using (var query = PdhQuery.TryCreate())
         {
-            // Query disposal must not throw
+            if (query is not null)
+            {
+                PdhMultiCounter? mc1 = query.AddMultiCounter(@"\Processor Information(*)\% Processor Utility");
+                PdhMultiCounter? mc2 = query.AddMultiCounter(@"\PhysicalDisk(*)\% Disk Time");
+
+                if (mc1 is not null)
+                {
+                    foreach (PdhItemSpan _ in mc1.Enumerate()) { }
+                }
+                if (mc2 is not null)
+                {
+                    foreach (PdhItemSpan _ in mc2.Enumerate()) { }
+                }
+
+                // Disposing query disposes all registered multiCounters and their buffers
+                query.Dispose();
+
+                // Subsequent direct dispose on counters must not throw or double-free
+                mc1?.Dispose();
+                mc2?.Dispose();
+            }
         }
     }
 
