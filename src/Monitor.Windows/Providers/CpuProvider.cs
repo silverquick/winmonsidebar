@@ -422,45 +422,4 @@ public sealed partial class CpuProvider : IMetricProvider<CpuSnapshot>, IDetailS
         _perCoreClockCounter = null;
         _performancePercentCounter = null;
     }
-
-    /// <summary>
-    /// PDH の Processor Information instance name ("0,0" "0,1" ... "1,0" ...) を、カンマ区切りの各要素を
-    /// 数値としてソートする Comparer。論理コアの並び順を正しくするために文字列ソートは使わない。
-    /// </summary>
-    private sealed class PdhCoreInstanceComparer : IComparer<PdhCounterItem>
-    {
-        public static readonly PdhCoreInstanceComparer Instance = new();
-
-        public int Compare(PdhCounterItem x, PdhCounterItem y)
-        {
-            int[] xParts = ParseParts(x.InstanceName);
-            int[] yParts = ParseParts(y.InstanceName);
-
-            int length = Math.Max(xParts.Length, yParts.Length);
-            for (int i = 0; i < length; i++)
-            {
-                int xValue = i < xParts.Length ? xParts[i] : 0;
-                int yValue = i < yParts.Length ? yParts[i] : 0;
-                int cmp = xValue.CompareTo(yValue);
-                if (cmp != 0)
-                {
-                    return cmp;
-                }
-            }
-
-            return 0;
-        }
-
-        private static int[] ParseParts(string instanceName)
-        {
-            string[] parts = instanceName.Split(',');
-            var result = new int[parts.Length];
-            for (int i = 0; i < parts.Length; i++)
-            {
-                result[i] = int.TryParse(parts[i], out int value) ? value : 0;
-            }
-
-            return result;
-        }
-    }
 }
