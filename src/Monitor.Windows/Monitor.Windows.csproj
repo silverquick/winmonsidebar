@@ -11,6 +11,7 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="Monitor.App.Tests" />
+    <InternalsVisibleTo Include="Monitor.Windows.Tests" />
   </ItemGroup>
 
 </Project>
