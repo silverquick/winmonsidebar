@@ -317,7 +317,7 @@ public sealed class MetricsHub : IAsyncDisposable
     }
 
     /// <summary>テスト用の MetricsHub を生成する。</summary>
-    public static MetricsHub CreateForTest(MetricsHubOptions? options = null) =>
+    internal static MetricsHub CreateForTest(MetricsHubOptions? options = null) =>
         new(
             options ?? new MetricsHubOptions(),
             new NullMetricProvider<CpuSnapshot>(CpuSnapshot.Empty),
@@ -330,7 +330,7 @@ public sealed class MetricsHub : IAsyncDisposable
             new NullMetricProvider<IReadOnlyList<VolumeSnapshot>>(Array.Empty<VolumeSnapshot>()));
 
     /// <summary>テスト用にスナップショットを直接発行・履歴追加する。</summary>
-    public void PublishSnapshotForTest(MetricsSnapshot snapshot, bool appendHistory = true)
+    internal void PublishSnapshotForTest(MetricsSnapshot snapshot, bool appendHistory = true)
     {
         Publish(
             cpu: snapshot.Cpu,

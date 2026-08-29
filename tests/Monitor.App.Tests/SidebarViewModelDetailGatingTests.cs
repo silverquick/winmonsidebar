@@ -28,7 +28,11 @@ public sealed class SidebarViewModelDetailGatingTests
         double netSend = 100_000,
         double thermalCpu = 60.0,
         double thermalMb = 35.0,
-        int fanRpm = 1200)
+        int fanRpm = 1200,
+        IReadOnlyList<MemoryModuleInfo>? customModules = null,
+        IReadOnlyList<PageFileInfo>? customPageFiles = null,
+        IReadOnlyList<ProcessInfo>? customProcesses = null,
+        ThermalSnapshot? customThermal = null)
     {
         var cpu = new CpuSnapshot
         {
@@ -86,7 +90,7 @@ public sealed class SidebarViewModelDetailGatingTests
             HandleCount = 40000,
             ProcessCount = 150,
             ThreadCount = 1200,
-            Modules = new MemoryModuleInfo[]
+            Modules = customModules ?? new MemoryModuleInfo[]
             {
                 new()
                 {
@@ -96,7 +100,7 @@ public sealed class SidebarViewModelDetailGatingTests
                     MemoryType = "DDR4",
                 },
             },
-            PageFiles = new PageFileInfo[]
+            PageFiles = customPageFiles ?? new PageFileInfo[]
             {
                 new()
                 {
@@ -163,7 +167,7 @@ public sealed class SidebarViewModelDetailGatingTests
             TotalReceiveBytesPerSec: netRecv,
             TotalSendBytesPerSec: netSend);
 
-        var thermal = new ThermalSnapshot
+        var thermal = customThermal ?? new ThermalSnapshot
         {
             IsAvailable = true,
             IsElevated = true,
@@ -174,7 +178,7 @@ public sealed class SidebarViewModelDetailGatingTests
             Fans = new SensorReading[] { new("CPU Fan", fanRpm) },
         };
 
-        var processes = new ProcessSnapshot(new ProcessInfo[]
+        var processes = new ProcessSnapshot(customProcesses ?? new ProcessInfo[]
         {
             new(1001, "proc_a.exe", 25.0, 500UL * 1024 * 1024),
             new(1002, "proc_b.exe", 15.0, 300UL * 1024 * 1024),
@@ -204,6 +208,7 @@ public sealed class SidebarViewModelDetailGatingTests
         settings.ExpandedSections["cpu"] = false;
         settings.ExpandedSections["gpu"] = false;
         settings.ExpandedSections["memory"] = false;
+        settings.ExpandedSections["memory-modules"] = false;
         settings.ExpandedSections["storage"] = false;
         settings.ExpandedSections["network"] = false;
         settings.ExpandedSections["network-all"] = false;
@@ -216,6 +221,7 @@ public sealed class SidebarViewModelDetailGatingTests
         Assert.IsFalse(vm.IsCpuExpanded);
         Assert.IsFalse(vm.IsGpuExpanded);
         Assert.IsFalse(vm.IsMemoryExpanded);
+        Assert.IsFalse(vm.IsMemoryModulesExpanded);
         Assert.IsFalse(vm.IsStorageExpanded);
         Assert.IsFalse(vm.IsNetworkExpanded);
         Assert.IsFalse(vm.IsThermalExpanded);
@@ -230,6 +236,8 @@ public sealed class SidebarViewModelDetailGatingTests
         Assert.AreEqual(0, vm.DiskReadSparkline.Length);
         Assert.AreEqual(0, vm.NetworkDownSparkline.Length);
         Assert.AreEqual(0, vm.ThermalCoreTemperatures.Count);
+        Assert.AreEqual(0, vm.MemoryModules.Count);
+        Assert.AreEqual(0, vm.PageFileRows.Count);
 
         var changedProps = new List<string>();
         vm.PropertyChanged += (_, e) =>
@@ -261,6 +269,7 @@ public sealed class SidebarViewModelDetailGatingTests
         string[] forbiddenDetailProps =
         [
             nameof(SidebarViewModel.CpuUsageText),
+            nameof(SidebarViewModel.CpuModelText),
             nameof(SidebarViewModel.CpuCurrentClockText),
             nameof(SidebarViewModel.CpuGaugeValue),
             nameof(SidebarViewModel.CpuSparkline),
@@ -268,6 +277,7 @@ public sealed class SidebarViewModelDetailGatingTests
             nameof(SidebarViewModel.CpuCoreCountText),
             nameof(SidebarViewModel.CpuTemperatureText),
             nameof(SidebarViewModel.CpuPowerText),
+            nameof(SidebarViewModel.GpuAdapterNameText),
             nameof(SidebarViewModel.GpuUsageText),
             nameof(SidebarViewModel.GpuCoreClockText),
             nameof(SidebarViewModel.GpuGaugeValue),
@@ -297,6 +307,10 @@ public sealed class SidebarViewModelDetailGatingTests
             nameof(SidebarViewModel.MemorySystemCacheText),
             nameof(SidebarViewModel.MemoryCommitText),
             nameof(SidebarViewModel.MemoryHandlesLine),
+            nameof(SidebarViewModel.MemoryHardwareReservedText),
+            nameof(SidebarViewModel.MemorySlotSummaryText),
+            nameof(SidebarViewModel.MemoryModules),
+            nameof(SidebarViewModel.PageFileRows),
             nameof(SidebarViewModel.DiskReadLineText),
             nameof(SidebarViewModel.DiskWriteLineText),
             nameof(SidebarViewModel.DiskReadSparkline),
@@ -332,6 +346,8 @@ public sealed class SidebarViewModelDetailGatingTests
         Assert.AreEqual(0, vm.DiskReadSparkline.Length);
         Assert.AreEqual(0, vm.NetworkDownSparkline.Length);
         Assert.AreEqual(0, vm.ThermalCoreTemperatures.Count);
+        Assert.AreEqual(0, vm.MemoryModules.Count);
+        Assert.AreEqual(0, vm.PageFileRows.Count);
     }
 
     [STATestMethod]
@@ -386,7 +402,7 @@ public sealed class SidebarViewModelDetailGatingTests
             netRecv: 125_000_000, // 1 Gbps
             netSend: 62_500_000,  // 500 Mbps
             thermalCpu: 95.0,
-            fanRpm: 0);          // Cooling fault critical
+            fanRpm: 0);          // Cooling fault: Caution (CPU高温 + ファン0RPM、このカテゴリにCriticalは無し)
 
         hub.PublishSnapshotForTest(criticalSnapshot);
         vm.ApplyLatestSnapshot();
@@ -414,6 +430,62 @@ public sealed class SidebarViewModelDetailGatingTests
     }
 
     [STATestMethod]
+    public void Collapsed_AlertLevelTransitionsBackToNone_WhenValuesNormalize()
+    {
+        var hub = MetricsHub.CreateForTest();
+        var initialCritical = CreateSampleSnapshot(
+            cpuUsage: 95.0,
+            cpuTemp: 95.0,
+            gpuTemp: 85.0,
+            gpuHotspot: 105.0,
+            committed: 19UL * 1024 * 1024 * 1024,
+            commitLimit: 20UL * 1024 * 1024 * 1024,
+            diskTemp: 85.0,
+            thermalCpu: 95.0,
+            fanRpm: 0);
+
+        hub.PublishSnapshotForTest(initialCritical);
+
+        var settings = new AppSettings();
+        settings.ExpandedSections["cpu"] = false;
+        settings.ExpandedSections["gpu"] = false;
+        settings.ExpandedSections["memory"] = false;
+        settings.ExpandedSections["storage"] = false;
+        settings.ExpandedSections["thermal"] = false;
+
+        using var vm = new SidebarViewModel(hub, Dispatcher.CurrentDispatcher, settings);
+
+        // 初期状態で Critical / Caution になっていることを確認
+        Assert.AreEqual(AlertLevel.Critical, vm.CpuAlertLevel);
+        Assert.AreEqual(AlertLevel.Critical, vm.GpuAlertLevel);
+        Assert.AreEqual(AlertLevel.Critical, vm.MemoryAlertLevel);
+        Assert.AreEqual(AlertLevel.Critical, vm.StorageAlertLevel);
+        Assert.AreEqual(AlertLevel.Caution, vm.ThermalAlertLevel);
+
+        // 正常値に戻ったスナップショットを発行
+        var normalSnapshot = CreateSampleSnapshot(
+            cpuUsage: 25.0,
+            cpuTemp: 45.0,
+            gpuTemp: 40.0,
+            gpuHotspot: 50.0,
+            committed: 6UL * 1024 * 1024 * 1024,
+            commitLimit: 20UL * 1024 * 1024 * 1024,
+            diskTemp: 35.0,
+            thermalCpu: 45.0,
+            fanRpm: 1200);
+
+        hub.PublishSnapshotForTest(normalSnapshot);
+        vm.ApplyLatestSnapshot();
+
+        // 折りたたみ中であっても警告解除（None）が即座に反映されることを検証
+        Assert.AreEqual(AlertLevel.None, vm.CpuAlertLevel, "CPU alert should clear to None while collapsed.");
+        Assert.AreEqual(AlertLevel.None, vm.GpuAlertLevel, "GPU alert should clear to None while collapsed.");
+        Assert.AreEqual(AlertLevel.None, vm.MemoryAlertLevel, "Memory alert should clear to None while collapsed.");
+        Assert.AreEqual(AlertLevel.None, vm.StorageAlertLevel, "Storage alert should clear to None while collapsed.");
+        Assert.AreEqual(AlertLevel.None, vm.ThermalAlertLevel, "Thermal alert should clear to None while collapsed.");
+    }
+
+    [STATestMethod]
     public void CollapsedToExpanded_ImmediatelyAppliesLatestSnapshotToDetails()
     {
         var hub = MetricsHub.CreateForTest();
@@ -424,6 +496,7 @@ public sealed class SidebarViewModelDetailGatingTests
         settings.ExpandedSections["cpu"] = false;
         settings.ExpandedSections["gpu"] = false;
         settings.ExpandedSections["memory"] = false;
+        settings.ExpandedSections["memory-modules"] = false;
         settings.ExpandedSections["storage"] = false;
         settings.ExpandedSections["network"] = false;
         settings.ExpandedSections["network-all"] = false;
@@ -473,35 +546,261 @@ public sealed class SidebarViewModelDetailGatingTests
         Assert.IsTrue(vm.MemorySparkline.Length > 0);
         Assert.AreEqual(1, vm.PageFileRows.Count);
 
-        // 4. Storage を展開 -> 即座に反映
+        // 4. MemoryModules を展開 -> 即座に反映
+        Assert.AreEqual(0, vm.MemoryModules.Count);
+        vm.IsMemoryModulesExpanded = true;
+        Assert.AreEqual(1, vm.MemoryModules.Count);
+        Assert.AreEqual("DIMM 1", vm.MemoryModules[0].SlotText);
+        StringAssert.Contains(vm.MemorySlotSummaryText, "8GB DDR4-3200");
+
+        // 5. Storage を展開 -> 即座に反映
         vm.IsStorageExpanded = true;
         Assert.IsTrue(vm.StorageRows.Count > 0, "StorageRows should be immediately populated on expand.");
         StringAssert.Contains(vm.DiskReadLineText, "12 MB/s");
         StringAssert.Contains(vm.DiskWriteLineText, "34 MB/s");
         Assert.IsTrue(vm.DiskReadSparkline.Length > 0);
 
-        // 5. Network を展開 -> 即座に反映
+        // 6. Network を展開 -> 即座に反映
         vm.IsNetworkExpanded = true;
         Assert.AreEqual("Ethernet 1", vm.NetworkNicName);
         StringAssert.Contains(vm.NetworkDownText, "200 Mbps");
         StringAssert.Contains(vm.NetworkUpText, "100 Mbps");
         Assert.IsTrue(vm.NetworkDownSparkline.Length > 0);
 
-        // 6. NetworkAll を展開 -> 即座に secondary rows が作成される
+        // 7. NetworkAll を展開 -> 即座に secondary rows が作成される
         Assert.AreEqual(0, vm.NetworkAllRows.Count);
         vm.IsNetworkAllExpanded = true;
         Assert.AreEqual(2, vm.NetworkAllRows.Count, "Secondary network adapters should be created when expanded.");
 
-        // 7. Thermal を展開 -> 即座に反映
+        // 8. Thermal を展開 -> 即座に反映
         vm.IsThermalExpanded = true;
         Assert.AreEqual("68°C", vm.ThermalCpuPackageText);
         Assert.AreEqual(1, vm.ThermalCoreTemperatures.Count);
         Assert.AreEqual(1, vm.ThermalFans.Count);
 
-        // 8. Process を展開 -> 即座に反映
+        // 9. Process を展開 -> 即座に反映
         vm.IsProcessExpanded = true;
         Assert.AreEqual(2, vm.Processes.Count, "Processes should be populated immediately on expand.");
         Assert.AreEqual("proc_a.exe", vm.Processes[0].Name);
+    }
+
+    [STATestMethod]
+    public void RoundTrip_CollapsedExpandedCollapsed_RetainsCorrectValuesAndStopsUpdating()
+    {
+        var hub = MetricsHub.CreateForTest();
+        var snapshot1 = CreateSampleSnapshot(cpuUsage: 30.0, cpuTemp: 55.0);
+        hub.PublishSnapshotForTest(snapshot1);
+
+        var settings = new AppSettings();
+        settings.ExpandedSections["cpu"] = false;
+
+        using var vm = new SidebarViewModel(hub, Dispatcher.CurrentDispatcher, settings);
+
+        // 1. 折りたたみ中: snapshot1 の詳細は反映されていない
+        Assert.AreEqual("0%", vm.CpuUsageText);
+
+        // 2. 展開: snapshot1 の詳細が即反映
+        vm.IsCpuExpanded = true;
+        Assert.AreEqual("30%", vm.CpuUsageText);
+        Assert.AreEqual("55°C", vm.CpuTemperatureText);
+
+        // 3. 展開中に snapshot2 到着: 更新される
+        var snapshot2 = CreateSampleSnapshot(cpuUsage: 60.0, cpuTemp: 65.0);
+        hub.PublishSnapshotForTest(snapshot2);
+        vm.ApplyLatestSnapshot();
+        Assert.AreEqual("60%", vm.CpuUsageText);
+        Assert.AreEqual("65°C", vm.CpuTemperatureText);
+
+        // 4. 再び折りたたむ: 値が壊れず残る
+        vm.IsCpuExpanded = false;
+        Assert.AreEqual("60%", vm.CpuUsageText);
+
+        // 5. 折りたたみ中に snapshot3 到着: Summary は更新されるが Detail は更新されない
+        var snapshot3 = CreateSampleSnapshot(cpuUsage: 85.0, cpuTemp: 78.0);
+        hub.PublishSnapshotForTest(snapshot3);
+        vm.ApplyLatestSnapshot();
+
+        StringAssert.Contains(vm.CpuSummary, "85%");
+        StringAssert.Contains(vm.CpuSummary, "78°C");
+        Assert.AreEqual("60%", vm.CpuUsageText, "Detail CpuUsageText must not update while re-collapsed.");
+        Assert.AreEqual("65°C", vm.CpuTemperatureText, "Detail CpuTemperatureText must not update while re-collapsed.");
+
+        // 6. 再度展開: 最新 snapshot3 が即反映される
+        vm.IsCpuExpanded = true;
+        Assert.AreEqual("85%", vm.CpuUsageText);
+        Assert.AreEqual("78°C", vm.CpuTemperatureText);
+    }
+
+    [STATestMethod]
+    public void MemoryModules_SubSection_Gating()
+    {
+        var hub = MetricsHub.CreateForTest();
+        var initial = CreateSampleSnapshot(
+            customModules: new MemoryModuleInfo[]
+            {
+                new()
+                {
+                    Slot = "DIMM 1",
+                    CapacityBytes = 16UL * 1024 * 1024 * 1024,
+                    SpeedMhz = 3600,
+                    MemoryType = "DDR4",
+                },
+                new()
+                {
+                    Slot = "DIMM 2",
+                    CapacityBytes = 16UL * 1024 * 1024 * 1024,
+                    SpeedMhz = 3600,
+                    MemoryType = "DDR4",
+                },
+            });
+        hub.PublishSnapshotForTest(initial);
+
+        var settings = new AppSettings();
+        settings.ExpandedSections["memory"] = true;
+        settings.ExpandedSections["memory-modules"] = false;
+
+        using var vm = new SidebarViewModel(hub, Dispatcher.CurrentDispatcher, settings);
+
+        // 親(memory)は展開中だが子(memory-modules)は折りたたみ中
+        Assert.IsTrue(vm.IsMemoryExpanded);
+        Assert.IsFalse(vm.IsMemoryModulesExpanded);
+
+        // 子セクションの要約（Summary）は更新される
+        Assert.AreEqual("2 本", vm.MemoryModulesSummary);
+        // 子セクションの詳細（Detail: 行VMリストおよびスロット要約）は未生成
+        Assert.AreEqual(0, vm.MemoryModules.Count);
+        Assert.AreEqual("—", vm.MemorySlotSummaryText);
+
+        // 子を展開 -> 即座に最新スナップショットから反映される
+        vm.IsMemoryModulesExpanded = true;
+        Assert.AreEqual(2, vm.MemoryModules.Count);
+        Assert.AreEqual("DIMM 1", vm.MemoryModules[0].SlotText);
+        Assert.AreEqual("DIMM 2", vm.MemoryModules[1].SlotText);
+        StringAssert.Contains(vm.MemorySlotSummaryText, "16GB DDR4-3200 × 2");
+
+        // 子を折りたたむ -> 行VMリストは残る
+        vm.IsMemoryModulesExpanded = false;
+        Assert.AreEqual(2, vm.MemoryModules.Count);
+
+        // 折りたたみ中に新しいモジュール構成が届く
+        var newModules = new MemoryModuleInfo[]
+        {
+            new()
+            {
+                Slot = "DIMM 1",
+                CapacityBytes = 32UL * 1024 * 1024 * 1024,
+                SpeedMhz = 3200,
+                MemoryType = "DDR4",
+            },
+        };
+        var updated = CreateSampleSnapshot(customModules: newModules);
+        hub.PublishSnapshotForTest(updated);
+        vm.ApplyLatestSnapshot();
+
+        // 折りたたみ中は Summary だけが "1 本" に更新され、MemoryModules は更新されない
+        Assert.AreEqual("1 本", vm.MemoryModulesSummary);
+        Assert.AreEqual(2, vm.MemoryModules.Count, "MemoryModules must not be rebuilt while collapsed.");
+
+        // 再展開時に即座に新しい構成へ反映される
+        vm.IsMemoryModulesExpanded = true;
+        Assert.AreEqual(1, vm.MemoryModules.Count);
+        Assert.AreEqual("32GB", vm.MemoryModules[0].CapacityText);
+        StringAssert.Contains(vm.MemorySlotSummaryText, "32GB DDR4-3200 × 1");
+    }
+
+    [STATestMethod]
+    public void ReferenceEqualityGuards_DoNotRecreateViewModels_WhenReferencesAreUnchanged()
+    {
+        var hub = MetricsHub.CreateForTest();
+
+        var modules = new MemoryModuleInfo[]
+        {
+            new() { Slot = "DIMM 1", CapacityBytes = 8UL * 1024 * 1024 * 1024, SpeedMhz = 3200, MemoryType = "DDR4" },
+        };
+        var pageFiles = new PageFileInfo[]
+        {
+            new() { Path = "C:\\pagefile.sys", TotalBytes = 4UL * 1024 * 1024 * 1024, UsedBytes = 1UL * 1024 * 1024 * 1024, PeakBytes = 2UL * 1024 * 1024 * 1024, UsagePercent = 25.0 },
+        };
+        var processes = new ProcessInfo[]
+        {
+            new(1001, "proc_a.exe", 25.0, 500UL * 1024 * 1024),
+        };
+        var thermal = new ThermalSnapshot
+        {
+            IsAvailable = true,
+            IsElevated = true,
+            CpuPackageTemperatureC = 50.0,
+            CpuCoreTemperatures = new SensorReading[] { new("Core 0", 50.0) },
+            Fans = new SensorReading[] { new("Fan 1", 1200) },
+        };
+
+        var initial = CreateSampleSnapshot(
+            customModules: modules,
+            customPageFiles: pageFiles,
+            customProcesses: processes,
+            customThermal: thermal);
+
+        hub.PublishSnapshotForTest(initial);
+
+        var settings = new AppSettings();
+        settings.ExpandedSections["memory"] = true;
+        settings.ExpandedSections["memory-modules"] = true;
+        settings.ExpandedSections["thermal"] = true;
+        settings.ExpandedSections["process"] = true;
+
+        using var vm = new SidebarViewModel(hub, Dispatcher.CurrentDispatcher, settings);
+
+        IReadOnlyList<MemoryModuleRowViewModel> initialModules = vm.MemoryModules;
+        IReadOnlyList<PageFileRowViewModel> initialPageFiles = vm.PageFileRows;
+        IReadOnlyList<SensorRowViewModel> initialThermalCores = vm.ThermalCoreTemperatures;
+        int initialProcessCount = vm.Processes.Count;
+
+        // 同じ参照のリスト/インスタンスを載せた新しい snapshot を発行
+        var sameReferenceSnapshot = CreateSampleSnapshot(
+            cpuUsage: 99.0, // fast tick の値だけ変更
+            customModules: modules,
+            customPageFiles: pageFiles,
+            customProcesses: processes,
+            customThermal: thermal);
+
+        hub.PublishSnapshotForTest(sameReferenceSnapshot);
+        vm.ApplyLatestSnapshot();
+
+        // 参照等価により再生成されていないことを検証
+        Assert.AreSame(initialModules, vm.MemoryModules, "MemoryModules should not be recreated when list reference is unchanged.");
+        Assert.AreSame(initialPageFiles, vm.PageFileRows, "PageFileRows should not be recreated when list reference is unchanged.");
+        Assert.AreSame(initialThermalCores, vm.ThermalCoreTemperatures, "ThermalCoreTemperatures should not be recreated when thermal reference is unchanged.");
+        Assert.AreEqual(initialProcessCount, vm.Processes.Count);
+
+        // 異なる参照のリストを載せた snapshot を発行
+        var newModules = new MemoryModuleInfo[]
+        {
+            new() { Slot = "DIMM 1", CapacityBytes = 16UL * 1024 * 1024 * 1024, SpeedMhz = 3200, MemoryType = "DDR4" },
+        };
+        var newPageFiles = new PageFileInfo[]
+        {
+            new() { Path = "D:\\pagefile.sys", TotalBytes = 8UL * 1024 * 1024 * 1024, UsedBytes = 2UL * 1024 * 1024 * 1024, PeakBytes = 3UL * 1024 * 1024 * 1024, UsagePercent = 25.0 },
+        };
+        var newThermal = new ThermalSnapshot
+        {
+            IsAvailable = true,
+            IsElevated = true,
+            CpuPackageTemperatureC = 60.0,
+            CpuCoreTemperatures = new SensorReading[] { new("Core 0", 60.0), new("Core 1", 58.0) },
+            Fans = new SensorReading[] { new("Fan 1", 1400) },
+        };
+        var differentReferenceSnapshot = CreateSampleSnapshot(
+            customModules: newModules,
+            customPageFiles: newPageFiles,
+            customThermal: newThermal);
+
+        hub.PublishSnapshotForTest(differentReferenceSnapshot);
+        vm.ApplyLatestSnapshot();
+
+        // 参照が変わったため再生成されていることを検証
+        Assert.AreNotSame(initialModules, vm.MemoryModules, "MemoryModules should be recreated when list reference changes.");
+        Assert.AreNotSame(initialPageFiles, vm.PageFileRows, "PageFileRows should be recreated when list reference changes.");
+        Assert.AreNotSame(initialThermalCores, vm.ThermalCoreTemperatures, "ThermalCoreTemperatures should be recreated when thermal reference changes.");
     }
 
     [STATestMethod]
@@ -516,6 +815,7 @@ public sealed class SidebarViewModelDetailGatingTests
         settings.ExpandedSections["cpu"] = true;
         settings.ExpandedSections["gpu"] = true;
         settings.ExpandedSections["memory"] = true;
+        settings.ExpandedSections["memory-modules"] = true;
         settings.ExpandedSections["storage"] = true;
         settings.ExpandedSections["network"] = true;
         settings.ExpandedSections["network-all"] = true;
@@ -530,6 +830,7 @@ public sealed class SidebarViewModelDetailGatingTests
         Assert.IsTrue(vm.StorageRows.Count > 0);
         Assert.AreEqual(2, vm.Processes.Count);
         Assert.AreEqual(2, vm.NetworkAllRows.Count);
+        Assert.AreEqual(1, vm.MemoryModules.Count);
 
         // 新しいスナップショットを発行
         var updated = CreateSampleSnapshot(

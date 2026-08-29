@@ -146,17 +146,11 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
             if (value && _hub.Latest is MetricsSnapshot latest)
             {
                 ApplyMemory(latest.Memory);
-                if (!ReferenceEquals(latest.Memory.Modules, _lastMemoryModules))
-                {
-                    ApplyMemoryModules(latest.Memory);
-                    _lastMemoryModules = latest.Memory.Modules;
-                }
+                ApplyMemoryModules(latest.Memory);
+                _lastMemoryModules = latest.Memory.Modules;
 
-                if (!ReferenceEquals(latest.Memory.PageFiles, _lastPageFiles))
-                {
-                    PageFileRows = BuildPageFileRows(latest.Memory.PageFiles);
-                    _lastPageFiles = latest.Memory.PageFiles;
-                }
+                PageFileRows = BuildPageFileRows(latest.Memory.PageFiles);
+                _lastPageFiles = latest.Memory.PageFiles;
             }
         }
     }
@@ -174,7 +168,7 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
 
             SetExpanded("memory-modules", value, ref _isMemoryModulesExpanded);
 
-            if (value && _hub.Latest is MetricsSnapshot latest && !ReferenceEquals(latest.Memory.Modules, _lastMemoryModules))
+            if (value && _hub.Latest is MetricsSnapshot latest)
             {
                 ApplyMemoryModules(latest.Memory);
                 _lastMemoryModules = latest.Memory.Modules;
@@ -579,7 +573,7 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
 
         // モジュール、ページファイル、温度、プロセスは低頻度プロバイダが返す同じリスト/インスタンスを
         // fast tick にそのまま載せている。参照が変わった時だけ行 VM を作り直す。
-        if (IsMemoryExpanded && !ReferenceEquals(s.Memory.Modules, _lastMemoryModules))
+        if (!ReferenceEquals(s.Memory.Modules, _lastMemoryModules))
         {
             ApplyMemoryModules(s.Memory);
             _lastMemoryModules = s.Memory.Modules;
@@ -770,11 +764,17 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
 
     private void ApplyMemoryModules(MemorySnapshot memory)
     {
-        MemorySlotSummaryText = BuildSlotSummary(memory);
-        MemoryModules = BuildMemoryModules(memory.Modules);
         MemoryModulesSummary = memory.Modules.Count > 0
             ? string.Create(CultureInfo.InvariantCulture, $"{memory.Modules.Count} 本")
             : "—";
+
+        if (!IsMemoryExpanded || !IsMemoryModulesExpanded)
+        {
+            return;
+        }
+
+        MemorySlotSummaryText = BuildSlotSummary(memory);
+        MemoryModules = BuildMemoryModules(memory.Modules);
     }
 
     private static string BuildSlotSummary(MemorySnapshot memory)
