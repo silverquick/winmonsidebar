@@ -25,6 +25,8 @@ public sealed class DiskProvider : IMetricProvider<DiskSnapshot>
 
     private readonly Func<IReadOnlyList<PhysicalDiskInfo>> _enumerateDisks;
     private readonly Func<IReadOnlyList<VolumeToDiskMapping>> _enumerateVolumes;
+    private readonly Func<int, DiskTemperatureReading> _readTemperature;
+    private readonly Func<(Dictionary<int, PdhDiskRates> ByDrive, PdhDiskRates? Total)>? _readRates;
 
     private PdhQuery? _query;
     private PdhMultiCounter? _readCounter;
@@ -50,16 +52,22 @@ public sealed class DiskProvider : IMetricProvider<DiskSnapshot>
 
     public DiskProvider() : this(
         StorageApi.EnumeratePhysicalDisks,
-        StorageApi.EnumerateFixedVolumesWithDiskMapping)
+        StorageApi.EnumerateFixedVolumesWithDiskMapping,
+        StorageApi.TryReadTemperature,
+        readRates: null)
     {
     }
 
     internal DiskProvider(
         Func<IReadOnlyList<PhysicalDiskInfo>> enumerateDisks,
-        Func<IReadOnlyList<VolumeToDiskMapping>> enumerateVolumes)
+        Func<IReadOnlyList<VolumeToDiskMapping>> enumerateVolumes,
+        Func<int, DiskTemperatureReading>? readTemperature = null,
+        Func<(Dictionary<int, PdhDiskRates> ByDrive, PdhDiskRates? Total)>? readRates = null)
     {
         _enumerateDisks = enumerateDisks;
         _enumerateVolumes = enumerateVolumes;
+        _readTemperature = readTemperature ?? StorageApi.TryReadTemperature;
+        _readRates = readRates;
     }
 
     public void Initialize()
@@ -219,14 +227,14 @@ public sealed class DiskProvider : IMetricProvider<DiskSnapshot>
 
     /// <summary>ディスクごとの温度 IOCTL をまとめて実行し、短時間キャッシュする。
     /// 温度は 1 秒単位で変化を追う必要がなく、この周期にすることで常駐時のハンドル操作を削減する。</summary>
-    private void RefreshTemperatures()
+    internal void RefreshTemperatures()
     {
         foreach (PhysicalDiskInfo disk in _staticState.PhysicalDisks)
         {
             DiskTemperatureReading reading;
             try
             {
-                reading = StorageApi.TryReadTemperature(disk.DriveNumber);
+                reading = _readTemperature(disk.DriveNumber);
             }
             catch
             {
@@ -286,7 +294,7 @@ public sealed class DiskProvider : IMetricProvider<DiskSnapshot>
                 volumesByDisk[volume.DiskNumber] = list;
             }
 
-            double usedPercent = volume.TotalBytes > 0 && volume.TotalBytes >= volume.FreeBytes
+            double usedPercent = volume.TotalBytes > 0
                 ? ClampPercent(100.0 * (volume.TotalBytes - volume.FreeBytes) / volume.TotalBytes)
                 : 0.0;
 
@@ -323,6 +331,11 @@ public sealed class DiskProvider : IMetricProvider<DiskSnapshot>
     /// separate "_Total" instance. Returns an empty dictionary and null total if PDH is unavailable.</summary>
     private (Dictionary<int, PdhDiskRates> ByDrive, PdhDiskRates? Total) ReadPdhRates()
     {
+        if (_readRates is not null)
+        {
+            return _readRates();
+        }
+
         var byDrive = new Dictionary<int, PdhDiskRates>();
 
         if (_query is null || _readCounter is null || _writeCounter is null || _busyCounter is null)
@@ -389,7 +402,7 @@ public sealed class DiskProvider : IMetricProvider<DiskSnapshot>
         return lookup;
     }
 
-    private readonly record struct PdhDiskRates(double Read, double Write, double Busy);
+    internal readonly record struct PdhDiskRates(double Read, double Write, double Busy);
 
     internal sealed class DiskStaticState
     {

@@ -108,7 +108,7 @@ public sealed class DiskProviderTests
             new VolumeToDiskMapping("C:", "Normal", 1000UL, 250UL, 0),
             // Total is 0 -> 0%
             new VolumeToDiskMapping("D:", "ZeroTotal", 0UL, 0UL, 0),
-            // Free > Total (overflow/anomaly) -> clamped to 0%
+            // Free > Total (overflow/anomaly) -> 100% (旧実装 e54a768 と完全一致)
             new VolumeToDiskMapping("E:", "FreeExceedsTotal", 1000UL, 1500UL, 0),
         };
 
@@ -117,7 +117,7 @@ public sealed class DiskProviderTests
         Assert.AreEqual(3, projections[0].Volumes.Count);
         Assert.AreEqual(75.0, projections[0].Volumes[0].UsedPercent, 0.001);
         Assert.AreEqual(0.0, projections[0].Volumes[1].UsedPercent, 0.001);
-        Assert.AreEqual(0.0, projections[0].Volumes[2].UsedPercent, 0.001);
+        Assert.AreEqual(100.0, projections[0].Volumes[2].UsedPercent, 0.001);
     }
 
     [TestMethod]
@@ -216,6 +216,78 @@ public sealed class DiskProviderTests
         Assert.AreSame(sampleAfterRefresh1.Devices[1].Volumes, sampleAfterRefresh2.Devices[1].Volumes);
         Assert.AreSame(sampleAfterRefresh1.Devices[0].DisplayName, sampleAfterRefresh2.Devices[0].DisplayName);
         Assert.AreSame(sampleAfterRefresh1.Devices[1].DisplayName, sampleAfterRefresh2.Devices[1].DisplayName);
+    }
+
+    [TestMethod]
+    public void DiskProvider_Sample_UpdatesDynamicValuesContinuously_WhileReusingStaticProjections()
+    {
+        var disks = new[]
+        {
+            new PhysicalDiskInfo(0, "Samsung SSD 980 1TB", "NVMe", true, 1_000_000_000_000UL),
+        };
+
+        var volumes = new[]
+        {
+            new VolumeToDiskMapping("C:", "Windows", 500_000_000_000UL, 200_000_000_000UL, 0),
+        };
+
+        int sampleIndex = 0;
+        var temperatures = new[]
+        {
+            new DiskTemperatureReading(CurrentC: 45.0, WarningC: 70.0, CriticalC: 85.0),
+            new DiskTemperatureReading(CurrentC: 48.0, WarningC: 70.0, CriticalC: 85.0),
+        };
+
+        var ratesBySample = new[]
+        {
+            new Dictionary<int, DiskProvider.PdhDiskRates>
+            {
+                [0] = new DiskProvider.PdhDiskRates(Read: 10_000_000.0, Write: 5_000_000.0, Busy: 25.0),
+            },
+            new Dictionary<int, DiskProvider.PdhDiskRates>
+            {
+                [0] = new DiskProvider.PdhDiskRates(Read: 20_000_000.0, Write: 15_000_000.0, Busy: 55.0),
+            },
+        };
+
+        var provider = new DiskProvider(
+            () => disks,
+            () => volumes,
+            driveNumber => temperatures[Math.Min(sampleIndex, temperatures.Length - 1)],
+            () => (ratesBySample[Math.Min(sampleIndex, ratesBySample.Length - 1)], null));
+
+        provider.Initialize();
+
+        // Sample 1
+        var sample1 = provider.Sample(TimeSpan.FromSeconds(1));
+        Assert.AreEqual(1, sample1.Devices.Count);
+        DiskDeviceSnapshot dev1 = sample1.Devices[0];
+        Assert.AreEqual("C:", dev1.DisplayName);
+        Assert.AreEqual(10_000_000.0, dev1.ReadBytesPerSec);
+        Assert.AreEqual(5_000_000.0, dev1.WriteBytesPerSec);
+        Assert.AreEqual(25.0, dev1.BusyPercent);
+        Assert.AreEqual(45.0, dev1.TemperatureC);
+        Assert.AreEqual(70.0, dev1.WarningTemperatureC);
+        Assert.AreEqual(85.0, dev1.CriticalTemperatureC);
+
+        // Advance to sample 2 (simulate dynamic value changes: R/W rates, busy, temperature)
+        sampleIndex = 1;
+        provider.RefreshTemperatures(); // Trigger temperature refresh
+        var sample2 = provider.Sample(TimeSpan.FromSeconds(1));
+
+        DiskDeviceSnapshot dev2 = sample2.Devices[0];
+
+        // Static projection reference invariant: Volumes and DisplayName are identical references
+        Assert.AreSame(dev1.Volumes, dev2.Volumes, "Static volumes projection must be reused across samples.");
+        Assert.AreSame(dev1.DisplayName, dev2.DisplayName, "Static display name projection must be reused across samples.");
+
+        // Dynamic values invariant: Rates, busy percent, temperature, and thresholds are updated per sample
+        Assert.AreEqual(20_000_000.0, dev2.ReadBytesPerSec, "ReadBytesPerSec must reflect sample 2 dynamic value.");
+        Assert.AreEqual(15_000_000.0, dev2.WriteBytesPerSec, "WriteBytesPerSec must reflect sample 2 dynamic value.");
+        Assert.AreEqual(55.0, dev2.BusyPercent, "BusyPercent must reflect sample 2 dynamic value.");
+        Assert.AreEqual(48.0, dev2.TemperatureC, "TemperatureC must reflect updated temperature.");
+        Assert.AreEqual(70.0, dev2.WarningTemperatureC, "WarningTemperatureC must be preserved.");
+        Assert.AreEqual(85.0, dev2.CriticalTemperatureC, "CriticalTemperatureC must be preserved.");
     }
 
     [TestMethod]
