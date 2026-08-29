@@ -102,29 +102,161 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
 
             SetExpanded("cpu", value, ref _isCpuExpanded);
             _hub.SetCpuDetailSamplingEnabled(value);
+
+            if (value && _hub.Latest is MetricsSnapshot latest)
+            {
+                ApplyCpu(latest.Cpu, latest.Thermal);
+            }
         }
     }
 
     private bool _isGpuExpanded;
-    public bool IsGpuExpanded { get => _isGpuExpanded; set => SetExpanded("gpu", value, ref _isGpuExpanded); }
+    public bool IsGpuExpanded
+    {
+        get => _isGpuExpanded;
+        set
+        {
+            if (_isGpuExpanded == value)
+            {
+                return;
+            }
+
+            SetExpanded("gpu", value, ref _isGpuExpanded);
+
+            if (value && _hub.Latest is MetricsSnapshot latest)
+            {
+                ApplyGpu(latest.Gpu);
+            }
+        }
+    }
 
     private bool _isMemoryExpanded;
-    public bool IsMemoryExpanded { get => _isMemoryExpanded; set => SetExpanded("memory", value, ref _isMemoryExpanded); }
+    public bool IsMemoryExpanded
+    {
+        get => _isMemoryExpanded;
+        set
+        {
+            if (_isMemoryExpanded == value)
+            {
+                return;
+            }
+
+            SetExpanded("memory", value, ref _isMemoryExpanded);
+
+            if (value && _hub.Latest is MetricsSnapshot latest)
+            {
+                ApplyMemory(latest.Memory);
+                ApplyMemoryModules(latest.Memory);
+                _lastMemoryModules = latest.Memory.Modules;
+
+                PageFileRows = BuildPageFileRows(latest.Memory.PageFiles);
+                _lastPageFiles = latest.Memory.PageFiles;
+            }
+        }
+    }
 
     private bool _isMemoryModulesExpanded;
-    public bool IsMemoryModulesExpanded { get => _isMemoryModulesExpanded; set => SetExpanded("memory-modules", value, ref _isMemoryModulesExpanded); }
+    public bool IsMemoryModulesExpanded
+    {
+        get => _isMemoryModulesExpanded;
+        set
+        {
+            if (_isMemoryModulesExpanded == value)
+            {
+                return;
+            }
+
+            SetExpanded("memory-modules", value, ref _isMemoryModulesExpanded);
+
+            if (value && _hub.Latest is MetricsSnapshot latest)
+            {
+                ApplyMemoryModules(latest.Memory);
+                _lastMemoryModules = latest.Memory.Modules;
+            }
+        }
+    }
 
     private bool _isStorageExpanded;
-    public bool IsStorageExpanded { get => _isStorageExpanded; set => SetExpanded("storage", value, ref _isStorageExpanded); }
+    public bool IsStorageExpanded
+    {
+        get => _isStorageExpanded;
+        set
+        {
+            if (_isStorageExpanded == value)
+            {
+                return;
+            }
+
+            SetExpanded("storage", value, ref _isStorageExpanded);
+
+            if (value && _hub.Latest is MetricsSnapshot latest)
+            {
+                ApplyStorage(latest.Disk, latest.Volumes, latest.Thermal);
+            }
+        }
+    }
 
     private bool _isNetworkExpanded;
-    public bool IsNetworkExpanded { get => _isNetworkExpanded; set => SetExpanded("network", value, ref _isNetworkExpanded); }
+    public bool IsNetworkExpanded
+    {
+        get => _isNetworkExpanded;
+        set
+        {
+            if (_isNetworkExpanded == value)
+            {
+                return;
+            }
+
+            SetExpanded("network", value, ref _isNetworkExpanded);
+
+            if (value && _hub.Latest is MetricsSnapshot latest)
+            {
+                ApplyNetwork(latest.Network);
+            }
+        }
+    }
 
     private bool _isNetworkAllExpanded;
-    public bool IsNetworkAllExpanded { get => _isNetworkAllExpanded; set => SetExpanded("network-all", value, ref _isNetworkAllExpanded); }
+    public bool IsNetworkAllExpanded
+    {
+        get => _isNetworkAllExpanded;
+        set
+        {
+            if (_isNetworkAllExpanded == value)
+            {
+                return;
+            }
+
+            SetExpanded("network-all", value, ref _isNetworkAllExpanded);
+
+            if (value && _hub.Latest is MetricsSnapshot latest)
+            {
+                int primaryIndex = FindPrimaryNicIndex(latest.Network.Interfaces);
+                NetworkAllRows = BuildNetworkAllRows(latest.Network.Interfaces, primaryIndex);
+            }
+        }
+    }
 
     private bool _isThermalExpanded;
-    public bool IsThermalExpanded { get => _isThermalExpanded; set => SetExpanded("thermal", value, ref _isThermalExpanded); }
+    public bool IsThermalExpanded
+    {
+        get => _isThermalExpanded;
+        set
+        {
+            if (_isThermalExpanded == value)
+            {
+                return;
+            }
+
+            SetExpanded("thermal", value, ref _isThermalExpanded);
+
+            if (value && _hub.Latest is MetricsSnapshot latest)
+            {
+                ApplyThermal(latest.Thermal);
+                _lastThermal = latest.Thermal;
+            }
+        }
+    }
 
     private bool _isProcessExpanded;
     public bool IsProcessExpanded
@@ -421,7 +553,7 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
     private AlertLevel _thermalAlertLevel;
     public AlertLevel ThermalAlertLevel { get => _thermalAlertLevel; private set => SetProperty(ref _thermalAlertLevel, value); }
 
-    private void ApplyLatestSnapshot()
+    internal void ApplyLatestSnapshot()
     {
         MetricsSnapshot? latest = _hub.Latest;
         if (latest is not null && latest.Timestamp != _lastAppliedSnapshotTimestamp)
@@ -447,7 +579,7 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
             _lastMemoryModules = s.Memory.Modules;
         }
 
-        if (!ReferenceEquals(s.Memory.PageFiles, _lastPageFiles))
+        if (IsMemoryExpanded && !ReferenceEquals(s.Memory.PageFiles, _lastPageFiles))
         {
             PageFileRows = BuildPageFileRows(s.Memory.PageFiles);
             _lastPageFiles = s.Memory.PageFiles;
@@ -468,30 +600,18 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
 
     private void ApplyCpu(CpuSnapshot cpu, ThermalSnapshot thermal)
     {
-        CpuModelText = string.IsNullOrWhiteSpace(cpu.ModelName) ? "CPU" : cpu.ModelName;
-        CpuUsageText = ByteFormatter.Percent(cpu.TotalUsagePercent);
-        CpuGaugeValue = cpu.TotalUsagePercent;
-        CpuCoreValues = cpu.PerCoreUsagePercent;
-        CpuSparkline = _hub.History.Snapshot(MetricSeries.CpuTotal);
-
         double effectiveClock = cpu.CurrentClockMhz > 0 ? cpu.CurrentClockMhz : cpu.BaseClockMhz;
-        CpuCurrentClockText = effectiveClock > 0 ? ByteFormatter.Clock(effectiveClock) : "—";
-
-        CpuCoreCountText = string.Create(
-            CultureInfo.InvariantCulture,
-            $"{cpu.PhysicalCoreCount}C / {cpu.LogicalCoreCount}T · ベース {ByteFormatter.Clock(cpu.BaseClockMhz)}");
 
         // CpuSnapshot.PackageTemperatureC/PackagePowerWatts は CpuProvider の範囲外で常に null。
         // 実体は ThermalSnapshot（LibreHardwareMonitor、管理者時のみ）から合成する。
         double? packageTemp = cpu.PackageTemperatureC ?? thermal.CpuPackageTemperatureC;
-        double? packagePower = cpu.PackagePowerWatts ?? thermal.CpuPackagePowerWatts;
-        CpuTemperatureText = ByteFormatter.Temperature(packageTemp);
-        CpuPowerText = ByteFormatter.Watts(packagePower);
 
+        // 警告レベル（見出しアクセントバー用）は折りたたみ中も常時更新
         CpuTemperatureAlertLevel = AlertEvaluator.CpuTemperature(packageTemp);
         CpuAlertLevel = CpuTemperatureAlertLevel;
 
-        var summaryParts = new List<string>(3) { CpuUsageText };
+        // 要約テキスト（折りたたみ時表示）も常時更新
+        var summaryParts = new List<string>(3) { ByteFormatter.Percent(cpu.TotalUsagePercent) };
         if (effectiveClock > 0)
         {
             summaryParts.Add(ByteFormatter.Clock(effectiveClock));
@@ -503,11 +623,57 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
         }
 
         CpuSummary = string.Join(" · ", summaryParts);
+
+        if (!IsCpuExpanded)
+        {
+            return;
+        }
+
+        CpuModelText = string.IsNullOrWhiteSpace(cpu.ModelName) ? "CPU" : cpu.ModelName;
+        CpuUsageText = ByteFormatter.Percent(cpu.TotalUsagePercent);
+        CpuGaugeValue = cpu.TotalUsagePercent;
+        CpuCoreValues = cpu.PerCoreUsagePercent;
+        CpuSparkline = _hub.History.Snapshot(MetricSeries.CpuTotal);
+
+        CpuCurrentClockText = effectiveClock > 0 ? ByteFormatter.Clock(effectiveClock) : "—";
+
+        CpuCoreCountText = string.Create(
+            CultureInfo.InvariantCulture,
+            $"{cpu.PhysicalCoreCount}C / {cpu.LogicalCoreCount}T · ベース {ByteFormatter.Clock(cpu.BaseClockMhz)}");
+
+        double? packagePower = cpu.PackagePowerWatts ?? thermal.CpuPackagePowerWatts;
+        CpuTemperatureText = ByteFormatter.Temperature(packageTemp);
+        CpuPowerText = ByteFormatter.Watts(packagePower);
     }
 
     private void ApplyGpu(GpuSnapshot gpu)
     {
         GpuAdapterSnapshot adapter = gpu.Adapters.Count > 0 ? gpu.Adapters[0] : GpuAdapterSnapshot.Empty;
+
+        // 警告レベル（見出しアクセントバー用）は折りたたみ中も常時更新
+        AlertLevel gpuCoreLevel = AlertEvaluator.GpuCoreTemperature(adapter.TemperatureC);
+        AlertLevel gpuHotspotLevel = AlertEvaluator.GpuHotspotTemperature(adapter.HotspotTemperatureC);
+        GpuTemperatureAlertLevel = MaxLevel(gpuCoreLevel, gpuHotspotLevel);
+        GpuAlertLevel = GpuTemperatureAlertLevel;
+
+        // 要約テキスト（折りたたみ時表示）も常時更新
+        var summaryParts = new List<string>(3) { ByteFormatter.Percent(gpu.TotalUsagePercent) };
+        if (adapter.TemperatureC is double summaryTemp)
+        {
+            summaryParts.Add(ByteFormatter.Temperature(summaryTemp));
+        }
+
+        if (adapter.PowerWatts is double summaryPower)
+        {
+            summaryParts.Add(summaryPower.ToString("F0", CultureInfo.InvariantCulture) + " W");
+        }
+
+        GpuSummary = string.Join(" · ", summaryParts);
+
+        if (!IsGpuExpanded)
+        {
+            return;
+        }
 
         GpuAdapterNameText = string.IsNullOrWhiteSpace(adapter.Name) ? "GPU" : adapter.Name;
         GpuUsageText = ByteFormatter.Percent(gpu.TotalUsagePercent);
@@ -532,32 +698,28 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
             : 0.0;
 
         GpuTemperatureSparkline = _hub.History.Snapshot(MetricSeries.GpuTemperature);
-
-        AlertLevel gpuCoreLevel = AlertEvaluator.GpuCoreTemperature(adapter.TemperatureC);
-        AlertLevel gpuHotspotLevel = AlertEvaluator.GpuHotspotTemperature(adapter.HotspotTemperatureC);
-        GpuTemperatureAlertLevel = MaxLevel(gpuCoreLevel, gpuHotspotLevel);
-        GpuAlertLevel = GpuTemperatureAlertLevel;
-
-        var summaryParts = new List<string>(3) { GpuUsageText };
-        if (adapter.TemperatureC is double summaryTemp)
-        {
-            summaryParts.Add(ByteFormatter.Temperature(summaryTemp));
-        }
-
-        if (adapter.PowerWatts is double summaryPower)
-        {
-            summaryParts.Add(summaryPower.ToString("F0", CultureInfo.InvariantCulture) + " W");
-        }
-
-        GpuSummary = string.Join(" · ", summaryParts);
     }
 
     private void ApplyMemory(MemorySnapshot memory)
     {
-        MemoryUsageText = string.Create(
+        // 警告レベル（見出しアクセントバー用）は折りたたみ中も常時更新
+        MemoryCommitAlertLevel = AlertEvaluator.MemoryCommit(memory.CommittedBytes, memory.CommitLimitBytes);
+        MemoryAlertLevel = MemoryCommitAlertLevel;
+
+        // 要約テキスト（折りたたみ時表示）も常時更新
+        string memoryUsageText = string.Create(
             CultureInfo.InvariantCulture,
             $"{ByteFormatter.Bytes(memory.UsedBytes)} / {ByteFormatter.Bytes(memory.TotalBytes)}");
-        MemoryUsagePercentText = ByteFormatter.Percent(memory.UsedPercent);
+        string memoryUsagePercentText = ByteFormatter.Percent(memory.UsedPercent);
+        MemorySummary = string.Create(CultureInfo.InvariantCulture, $"{memoryUsageText} · {memoryUsagePercentText}");
+
+        if (!IsMemoryExpanded)
+        {
+            return;
+        }
+
+        MemoryUsageText = memoryUsageText;
+        MemoryUsagePercentText = memoryUsagePercentText;
         MemoryGaugeValue = memory.UsedPercent;
         MemorySparkline = _hub.History.Snapshot(MetricSeries.MemoryUsedPercent);
 
@@ -582,9 +744,6 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
             CultureInfo.InvariantCulture,
             $"コミットピーク {ByteFormatter.Bytes(memory.CommitPeakBytes)}");
 
-        MemoryCommitAlertLevel = AlertEvaluator.MemoryCommit(memory.CommittedBytes, memory.CommitLimitBytes);
-        MemoryAlertLevel = MemoryCommitAlertLevel;
-
         MemoryHandlesLine = string.Create(
             CultureInfo.InvariantCulture,
             $"ハンドル {memory.HandleCount:N0} · プロセス {memory.ProcessCount:N0} · スレッド {memory.ThreadCount:N0}");
@@ -597,17 +756,25 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
                 CultureInfo.InvariantCulture,
                 $"ハードウェア予約 {reservedMb:N0} MB");
         }
-
-        MemorySummary = string.Create(CultureInfo.InvariantCulture, $"{MemoryUsageText} · {MemoryUsagePercentText}");
+        else
+        {
+            MemoryHardwareReservedText = string.Empty;
+        }
     }
 
     private void ApplyMemoryModules(MemorySnapshot memory)
     {
-        MemorySlotSummaryText = BuildSlotSummary(memory);
-        MemoryModules = BuildMemoryModules(memory.Modules);
         MemoryModulesSummary = memory.Modules.Count > 0
             ? string.Create(CultureInfo.InvariantCulture, $"{memory.Modules.Count} 本")
             : "—";
+
+        if (!IsMemoryExpanded || !IsMemoryModulesExpanded)
+        {
+            return;
+        }
+
+        MemorySlotSummaryText = BuildSlotSummary(memory);
+        MemoryModules = BuildMemoryModules(memory.Modules);
     }
 
     private static string BuildSlotSummary(MemorySnapshot memory)
@@ -669,6 +836,35 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
     /// </summary>
     private void ApplyStorage(DiskSnapshot disk, IReadOnlyList<VolumeSnapshot> volumes, ThermalSnapshot thermal)
     {
+        ulong totalCapacityBytes = 0;
+        ulong usedCapacityBytes = 0;
+
+        foreach (VolumeSnapshot v in volumes)
+        {
+            // 全体使用率（overallPercent）にはこの PC のローカルディスク容量だけを積算する。
+            // ネットワークドライブは NAS 側の全容量を持ち込んでしまい、ローカルの使用状況とは
+            // 無関係に率を歪めるため除外する（旧実装からの既存挙動を維持）。
+            if (v.Kind != VolumeKind.Network && v.IsReady && v.TotalBytes > 0)
+            {
+                totalCapacityBytes += v.TotalBytes;
+                usedCapacityBytes += v.UsedBytes;
+            }
+        }
+
+        double overallPercent = totalCapacityBytes > 0 ? 100.0 * usedCapacityBytes / totalCapacityBytes : 0.0;
+
+        // 要約テキスト（折りたたみ時表示）は常時更新
+        StorageSummary = string.Create(
+            CultureInfo.InvariantCulture,
+            $"{volumes.Count} ドライブ · {ByteFormatter.Percent(overallPercent)} · R {ShortRate(disk.TotalReadBytesPerSec)} W {ShortRate(disk.TotalWriteBytesPerSec)}");
+
+        if (!IsStorageExpanded)
+        {
+            // 折りたたみ中は行 VM やスパークラインを生成せず、警告レベルのみ判定して反映
+            StorageAlertLevel = EvaluateStorageAlertLevel(disk, volumes, thermal);
+            return;
+        }
+
         DiskReadLineText = string.Create(
             CultureInfo.InvariantCulture,
             $"R {ByteFormatter.BytesPerSec(disk.TotalReadBytesPerSec)}");
@@ -690,20 +886,8 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
         var unresolvedVolumes = new List<VolumeSnapshot>();
         var networkVolumes = new List<VolumeSnapshot>();
 
-        ulong totalCapacityBytes = 0;
-        ulong usedCapacityBytes = 0;
-
         foreach (VolumeSnapshot v in volumes)
         {
-            // 全体使用率（overallPercent）にはこの PC のローカルディスク容量だけを積算する。
-            // ネットワークドライブは NAS 側の全容量を持ち込んでしまい、ローカルの使用状況とは
-            // 無関係に率を歪めるため除外する（旧実装からの既存挙動を維持）。
-            if (v.Kind != VolumeKind.Network && v.IsReady && v.TotalBytes > 0)
-            {
-                totalCapacityBytes += v.TotalBytes;
-                usedCapacityBytes += v.UsedBytes;
-            }
-
             if (v.Kind == VolumeKind.Network)
             {
                 networkVolumes.Add(v);
@@ -776,12 +960,39 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
         }
 
         StorageAlertLevel = storageAlertLevel;
+    }
 
-        double overallPercent = totalCapacityBytes > 0 ? 100.0 * usedCapacityBytes / totalCapacityBytes : 0.0;
+    private static AlertLevel EvaluateStorageAlertLevel(DiskSnapshot disk, IReadOnlyList<VolumeSnapshot> volumes, ThermalSnapshot thermal)
+    {
+        AlertLevel level = AlertLevel.None;
+        foreach (DiskDeviceSnapshot d in disk.Devices)
+        {
+            double? temperature = d.TemperatureC ?? FindStorageTemperature(thermal.StorageTemperatures, d.Model);
+            level = MaxLevel(level, AlertEvaluator.DiskTemperature(temperature, d.WarningTemperatureC, d.CriticalTemperatureC, d.IsSsd));
+            if (level == AlertLevel.Critical)
+            {
+                return AlertLevel.Critical;
+            }
+        }
 
-        StorageSummary = string.Create(
-            CultureInfo.InvariantCulture,
-            $"{volumes.Count} ドライブ · {ByteFormatter.Percent(overallPercent)} · R {ShortRate(disk.TotalReadBytesPerSec)} W {ShortRate(disk.TotalWriteBytesPerSec)}");
+        foreach (VolumeSnapshot v in volumes)
+        {
+            if (v.Kind == VolumeKind.Network)
+            {
+                level = MaxLevel(level, AlertEvaluator.NetworkDriveDisconnected(v.IsReady));
+            }
+            else if (v.IsReady && v.TotalBytes > 0)
+            {
+                level = MaxLevel(level, AlertEvaluator.DriveCapacity(v.UsedPercent, v.FreeBytes));
+            }
+
+            if (level == AlertLevel.Critical)
+            {
+                return AlertLevel.Critical;
+            }
+        }
+
+        return level;
     }
 
     /// <summary>物理ディスク見出し行1件分の更新アクションを組み立てる。</summary>
@@ -952,12 +1163,40 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
 
     private void ApplyNetwork(NetworkSnapshot network)
     {
-        // 仮想 NIC が多数常駐する環境向けに、受信+送信の合計が最大の NIC を主表示にする。
+        string downText = "↓ " + ByteFormatter.Bits(network.TotalReceiveBytesPerSec);
+        string upText = "↑ " + ByteFormatter.Bits(network.TotalSendBytesPerSec);
+        NetworkSummary = string.Create(CultureInfo.InvariantCulture, $"{downText} {upText}");
+
+        if (!IsNetworkExpanded)
+        {
+            return;
+        }
+
+        int primaryIndex = FindPrimaryNicIndex(network.Interfaces);
+        NetworkInterfaceSnapshot nic = primaryIndex >= 0 ? network.Interfaces[primaryIndex] : NetworkInterfaceSnapshot.Empty;
+
+        NetworkNicName = nic.Name.Length > 0 ? nic.Name : "ネットワーク未接続";
+        NetworkDownText = downText;
+        NetworkUpText = upText;
+        NetworkDownSparkline = _hub.History.Snapshot(MetricSeries.NetReceiveBytesPerSec);
+        NetworkUpSparkline = _hub.History.Snapshot(MetricSeries.NetSendBytesPerSec);
+
+        int secondaryCount = Math.Max(0, network.Interfaces.Count - 1);
+        NetworkAllSummary = string.Create(CultureInfo.InvariantCulture, $"{secondaryCount} 個");
+
+        if (IsNetworkAllExpanded)
+        {
+            NetworkAllRows = BuildNetworkAllRows(network.Interfaces, primaryIndex);
+        }
+    }
+
+    private static int FindPrimaryNicIndex(IReadOnlyList<NetworkInterfaceSnapshot> interfaces)
+    {
         int primaryIndex = -1;
         double primaryTotal = -1;
-        for (int i = 0; i < network.Interfaces.Count; i++)
+        for (int i = 0; i < interfaces.Count; i++)
         {
-            NetworkInterfaceSnapshot candidate = network.Interfaces[i];
+            NetworkInterfaceSnapshot candidate = interfaces[i];
             double total = candidate.ReceiveBytesPerSec + candidate.SendBytesPerSec;
             if (total > primaryTotal)
             {
@@ -966,18 +1205,7 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
             }
         }
 
-        NetworkInterfaceSnapshot nic = primaryIndex >= 0 ? network.Interfaces[primaryIndex] : NetworkInterfaceSnapshot.Empty;
-
-        NetworkNicName = nic.Name.Length > 0 ? nic.Name : "ネットワーク未接続";
-        NetworkDownText = "↓ " + ByteFormatter.Bits(network.TotalReceiveBytesPerSec);
-        NetworkUpText = "↑ " + ByteFormatter.Bits(network.TotalSendBytesPerSec);
-        NetworkDownSparkline = _hub.History.Snapshot(MetricSeries.NetReceiveBytesPerSec);
-        NetworkUpSparkline = _hub.History.Snapshot(MetricSeries.NetSendBytesPerSec);
-
-        NetworkAllRows = BuildNetworkAllRows(network.Interfaces, primaryIndex);
-        NetworkAllSummary = string.Create(CultureInfo.InvariantCulture, $"{NetworkAllRows.Count} 個");
-
-        NetworkSummary = string.Create(CultureInfo.InvariantCulture, $"{NetworkDownText} {NetworkUpText}");
+        return primaryIndex;
     }
 
     private static IReadOnlyList<NetworkInterfaceRowViewModel> BuildNetworkAllRows(IReadOnlyList<NetworkInterfaceSnapshot> interfaces, int primaryIndex)
@@ -1003,18 +1231,6 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
 
     private void ApplyThermal(ThermalSnapshot thermal)
     {
-        IsThermalElevated = thermal.IsElevated;
-        IsThermalDataAvailable = thermal.IsAvailable;
-
-        ThermalCpuPackageText = ByteFormatter.Temperature(thermal.CpuPackageTemperatureC);
-        ThermalCpuPowerText = ByteFormatter.Watts(thermal.CpuPackagePowerWatts);
-        ThermalMotherboardText = ByteFormatter.Temperature(thermal.MotherboardTemperatureC);
-        ThermalVrmText = ByteFormatter.Temperature(thermal.VrmTemperatureC);
-
-        ThermalCoreTemperatures = BuildSensorRows(thermal.CpuCoreTemperatures, v => ByteFormatter.Temperature(v));
-        ThermalOtherTemperatures = BuildSensorRows(thermal.OtherTemperatures, v => ByteFormatter.Temperature(v));
-        ThermalFans = BuildSensorRows(thermal.Fans, v => ByteFormatter.Rpm((int)Math.Round(v)));
-
         ThermalAlertLevel = AlertEvaluator.CoolingFault(thermal.CpuPackageTemperatureC, thermal.MotherboardTemperatureC, thermal.Fans);
 
         if (!thermal.IsElevated)
@@ -1036,6 +1252,23 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
 
             ThermalSummary = summaryParts.Count > 0 ? string.Join(" · ", summaryParts) : "センサー無し";
         }
+
+        if (!IsThermalExpanded)
+        {
+            return;
+        }
+
+        IsThermalElevated = thermal.IsElevated;
+        IsThermalDataAvailable = thermal.IsAvailable;
+
+        ThermalCpuPackageText = ByteFormatter.Temperature(thermal.CpuPackageTemperatureC);
+        ThermalCpuPowerText = ByteFormatter.Watts(thermal.CpuPackagePowerWatts);
+        ThermalMotherboardText = ByteFormatter.Temperature(thermal.MotherboardTemperatureC);
+        ThermalVrmText = ByteFormatter.Temperature(thermal.VrmTemperatureC);
+
+        ThermalCoreTemperatures = BuildSensorRows(thermal.CpuCoreTemperatures, v => ByteFormatter.Temperature(v));
+        ThermalOtherTemperatures = BuildSensorRows(thermal.OtherTemperatures, v => ByteFormatter.Temperature(v));
+        ThermalFans = BuildSensorRows(thermal.Fans, v => ByteFormatter.Rpm((int)Math.Round(v)));
     }
 
     private static IReadOnlyList<SensorRowViewModel> BuildSensorRows(IReadOnlyList<SensorReading> readings, Func<double, string> formatValue)

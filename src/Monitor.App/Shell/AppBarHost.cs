@@ -36,6 +36,12 @@ public sealed class AppBarHost : IDisposable
     private bool _suppressedForFullscreen;
     private bool _disposed;
 
+    private IntPtr _shellHwnd;
+    private IntPtr _cachedSidebarMonitor;
+    private RECT _cachedSidebarMonitorRect;
+    private IntPtr _lastForegroundHwnd;
+    private bool _lastForegroundIsExcludedClass;
+
     public AppBarHost(Window window)
     {
         _window = window ?? throw new ArgumentNullException(nameof(window));
@@ -67,6 +73,7 @@ public sealed class AppBarHost : IDisposable
         }
 
         _hwnd = hwnd;
+        _shellHwnd = User32.GetShellWindow();
         _callbackMessage = User32.RegisterWindowMessageW("WinMonSidebar_AppBarMessage");
 
         var abd = APPBARDATA.Create(_hwnd);
@@ -128,6 +135,8 @@ public sealed class AppBarHost : IDisposable
             return;
         }
 
+        _cachedSidebarMonitor = monitor;
+        _cachedSidebarMonitorRect = monitorInfo.rcMonitor;
         var mon = monitorInfo.rcMonitor;
 
         var rc = Edge switch
@@ -221,13 +230,24 @@ public sealed class AppBarHost : IDisposable
         }
 
         // デスクトップ本体は常に画面全体を覆っているので除外する。
-        if (foreground == User32.GetShellWindow())
+        if (_shellHwnd == IntPtr.Zero)
+        {
+            _shellHwnd = User32.GetShellWindow();
+        }
+
+        if (_shellHwnd != IntPtr.Zero && foreground == _shellHwnd)
         {
             return false;
         }
 
-        string className = User32.GetWindowClassName(foreground);
-        if (className is "Progman" or "WorkerW" or "Shell_TrayWnd" or "Shell_SecondaryTrayWnd")
+        if (foreground != _lastForegroundHwnd)
+        {
+            _lastForegroundHwnd = foreground;
+            string className = User32.GetWindowClassName(foreground);
+            _lastForegroundIsExcludedClass = IsExcludedClassName(className);
+        }
+
+        if (_lastForegroundIsExcludedClass)
         {
             return false;
         }
@@ -237,24 +257,42 @@ public sealed class AppBarHost : IDisposable
             return false;
         }
 
-        IntPtr monitor = User32.MonitorFromWindow(_hwnd, User32.MONITOR_DEFAULTTONEAREST);
-        if (User32.MonitorFromWindow(foreground, User32.MONITOR_DEFAULTTONEAREST) != monitor)
+        if (_cachedSidebarMonitor == IntPtr.Zero)
+        {
+            var mon = User32.MonitorFromWindow(_hwnd, User32.MONITOR_DEFAULTTONEAREST);
+            var info = MONITORINFO.Create();
+            if (mon == IntPtr.Zero || !User32.GetMonitorInfoW(mon, ref info))
+            {
+                return false;
+            }
+
+            _cachedSidebarMonitor = mon;
+            _cachedSidebarMonitorRect = info.rcMonitor;
+        }
+
+        if (User32.MonitorFromWindow(foreground, User32.MONITOR_DEFAULTTONEAREST) != _cachedSidebarMonitor)
         {
             return false;
         }
 
-        MONITORINFO info = MONITORINFO.Create();
-        if (!User32.GetMonitorInfoW(monitor, ref info))
-        {
-            return false;
-        }
-
-        RECT mon = info.rcMonitor;
-        return rect.Left <= mon.Left
-            && rect.Top <= mon.Top
-            && rect.Right >= mon.Right
-            && rect.Bottom >= mon.Bottom;
+        return IsWindowCoveringMonitor(rect, _cachedSidebarMonitorRect);
     }
+
+    /// <summary>
+    /// デスクトップ（Progman/WorkerW）やタスクバー（Shell_TrayWnd等）など、
+    /// フルスクリーン判定から除外すべきウィンドウクラス名かを判定する。
+    /// </summary>
+    public static bool IsExcludedClassName(string? className) =>
+        className is "Progman" or "WorkerW" or "Shell_TrayWnd" or "Shell_SecondaryTrayWnd";
+
+    /// <summary>
+    /// 前面ウィンドウの矩形が対象モニタの矩形全体を覆っているかを判定する。
+    /// </summary>
+    public static bool IsWindowCoveringMonitor(RECT windowRect, RECT monitorRect) =>
+        windowRect.Left <= monitorRect.Left
+        && windowRect.Top <= monitorRect.Top
+        && windowRect.Right >= monitorRect.Right
+        && windowRect.Bottom >= monitorRect.Bottom;
 
     private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
@@ -289,6 +327,9 @@ public sealed class AppBarHost : IDisposable
                 }
                 break;
             case WM_DISPLAYCHANGE:
+                _shellHwnd = User32.GetShellWindow();
+                UpdatePosition();
+                break;
             case WM_DPICHANGED:
                 UpdatePosition();
                 break;
@@ -314,6 +355,11 @@ public sealed class AppBarHost : IDisposable
         }
 
         _suppressedForFullscreen = false;
+        _shellHwnd = IntPtr.Zero;
+        _cachedSidebarMonitor = IntPtr.Zero;
+        _cachedSidebarMonitorRect = default;
+        _lastForegroundHwnd = IntPtr.Zero;
+        _lastForegroundIsExcludedClass = false;
 
         if (_hook is not null)
         {

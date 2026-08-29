@@ -316,6 +316,34 @@ public sealed class MetricsHub : IAsyncDisposable
         DisposeProvider(_volumes);
     }
 
+    /// <summary>テスト用の MetricsHub を生成する。</summary>
+    internal static MetricsHub CreateForTest(MetricsHubOptions? options = null) =>
+        new(
+            options ?? new MetricsHubOptions(),
+            new NullMetricProvider<CpuSnapshot>(CpuSnapshot.Empty),
+            new NullMetricProvider<MemorySnapshot>(MemorySnapshot.Empty),
+            new NullMetricProvider<DiskSnapshot>(DiskSnapshot.Empty),
+            new NullMetricProvider<NetworkSnapshot>(NetworkSnapshot.Empty),
+            new NullMetricProvider<GpuSnapshot>(GpuSnapshot.Empty),
+            new NullMetricProvider<ProcessSnapshot>(ProcessSnapshot.Empty),
+            new NullThermalProvider(),
+            new NullMetricProvider<IReadOnlyList<VolumeSnapshot>>(Array.Empty<VolumeSnapshot>()));
+
+    /// <summary>テスト用にスナップショットを直接発行・履歴追加する。</summary>
+    internal void PublishSnapshotForTest(MetricsSnapshot snapshot, bool appendHistory = true)
+    {
+        Publish(
+            cpu: snapshot.Cpu,
+            memory: snapshot.Memory,
+            disk: snapshot.Disk,
+            network: snapshot.Network,
+            gpu: snapshot.Gpu,
+            processes: snapshot.Processes,
+            thermal: snapshot.Thermal,
+            volumes: snapshot.Volumes,
+            appendHistory: appendHistory);
+    }
+
     private static void DisposeProvider<T>(IMetricProvider<T> provider)
     {
         try
@@ -326,5 +354,24 @@ public sealed class MetricsHub : IAsyncDisposable
         {
             // Dispose 中の例外は無視する。
         }
+    }
+
+    private sealed class NullMetricProvider<T>(T defaultValue) : IMetricProvider<T>
+    {
+        public string Name => "Null";
+        public bool IsAvailable => true;
+        public void Initialize() { }
+        public T Sample(TimeSpan elapsed) => defaultValue;
+        public void Dispose() { }
+    }
+
+    private sealed class NullThermalProvider : IThermalProvider
+    {
+        public string Name => "NullThermal";
+        public bool IsAvailable => true;
+        public bool RequiresElevation => false;
+        public void Initialize() { }
+        public ThermalSnapshot Sample(TimeSpan elapsed) => ThermalSnapshot.Empty;
+        public void Dispose() { }
     }
 }
