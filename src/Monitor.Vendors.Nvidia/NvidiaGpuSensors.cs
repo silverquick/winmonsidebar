@@ -29,9 +29,7 @@ public sealed record NvidiaGpuReading
     public double? PowerLimitWatts { get; init; }
     public double? CoreClockMhz { get; init; }
     public double? MemoryClockMhz { get; init; }
-    public double? UtilizationPercent { get; init; }
     public ulong? DedicatedTotalBytes { get; init; }
-    public ulong? DedicatedUsedBytes { get; init; }
 }
 
 /// <summary>
@@ -54,6 +52,7 @@ public sealed class NvidiaGpuSensors : IDisposable
 {
     private readonly NvApi.NvPhysicalGpuHandle[] _handles;
     private readonly string?[] _names;
+    private readonly ulong?[] _dedicatedTotalBytes;
 
     /// <summary>Clock-frequency struct version (1-3) that this driver accepted, discovered once on
     /// first successful read and reused afterwards. -1 until discovered.</summary>
@@ -69,10 +68,11 @@ public sealed class NvidiaGpuSensors : IDisposable
     private bool _nvmlInitialized;
     private bool _disposed;
 
-    private NvidiaGpuSensors(NvApi.NvPhysicalGpuHandle[] handles, string?[] names, string? driverVersion, nint[]? nvmlHandles, bool nvmlInitialized)
+    private NvidiaGpuSensors(NvApi.NvPhysicalGpuHandle[] handles, string?[] names, ulong?[] dedicatedTotalBytes, string? driverVersion, nint[]? nvmlHandles, bool nvmlInitialized)
     {
         _handles = handles;
         _names = names;
+        _dedicatedTotalBytes = dedicatedTotalBytes;
         DriverVersion = driverVersion;
         _nvmlHandles = nvmlHandles;
         _nvmlInitialized = nvmlInitialized;
@@ -102,16 +102,18 @@ public sealed class NvidiaGpuSensors : IDisposable
             Array.Resize(ref handles, count);
 
             var names = new string?[count];
+            var dedicatedTotalBytes = new ulong?[count];
             for (int i = 0; i < count; i++)
             {
                 names[i] = TryGetName(handles[i]);
+                dedicatedTotalBytes[i] = TryGetDedicatedTotalBytes(handles[i]);
             }
 
             string? driverVersion = TryGetDriverVersion();
 
             (nint[]? nvmlHandles, bool nvmlInitialized) = TryCreateNvml(count);
 
-            return new NvidiaGpuSensors(handles, names, driverVersion, nvmlHandles, nvmlInitialized);
+            return new NvidiaGpuSensors(handles, names, dedicatedTotalBytes, driverVersion, nvmlHandles, nvmlInitialized);
         }
         catch
         {
@@ -227,8 +229,7 @@ public sealed class NvidiaGpuSensors : IDisposable
         (double? fanPercent, int? fanRpm) = TryGetFan(handle);
         (double? power, double? powerLimit) = TryGetPowerWatts(index);
         (double? coreClock, double? memClock) = TryGetClocksMhz(handle);
-        double? utilization = TryGetUtilizationPercent(handle);
-        (ulong? total, ulong? used) = TryGetMemoryBytes(handle);
+        ulong? dedicatedTotal = (uint)index < (uint)_dedicatedTotalBytes.Length ? _dedicatedTotalBytes[index] : null;
 
         return new NvidiaGpuReading
         {
@@ -244,9 +245,7 @@ public sealed class NvidiaGpuSensors : IDisposable
             PowerLimitWatts = powerLimit,
             CoreClockMhz = coreClock,
             MemoryClockMhz = memClock,
-            UtilizationPercent = utilization,
-            DedicatedTotalBytes = total,
-            DedicatedUsedBytes = used,
+            DedicatedTotalBytes = dedicatedTotal,
         };
     }
 
@@ -572,46 +571,11 @@ public sealed class NvidiaGpuSensors : IDisposable
         return mhz > 0.0 ? mhz : null;
     }
 
-    private static double? TryGetUtilizationPercent(NvApi.NvPhysicalGpuHandle handle)
-    {
-        if (NvApi.GpuGetDynamicPstatesInfoEx is null)
-        {
-            return null;
-        }
-
-        try
-        {
-            var info = new NvApi.NvDynamicPStatesInfo
-            {
-                Version = NvApi.MakeVersion<NvApi.NvDynamicPStatesInfo>(1),
-                Utilizations = new NvApi.NvDynamicPState[NvApi.MaxGpuUtilizations],
-            };
-
-            if (NvApi.GpuGetDynamicPstatesInfoEx(handle, ref info) != NvApi.NvStatus.Ok || info.Utilizations is null)
-            {
-                return null;
-            }
-
-            const int gpuDomainIndex = 0;
-            if (gpuDomainIndex >= info.Utilizations.Length || !info.Utilizations[gpuDomainIndex].IsPresent)
-            {
-                return null;
-            }
-
-            int percentage = info.Utilizations[gpuDomainIndex].Percentage;
-            return percentage is >= 0 and <= 100 ? percentage : null;
-        }
-        catch
-        {
-            return null;
-        }
-    }
-
-    private static (ulong? Total, ulong? Used) TryGetMemoryBytes(NvApi.NvPhysicalGpuHandle handle)
+    private static ulong? TryGetDedicatedTotalBytes(NvApi.NvPhysicalGpuHandle handle)
     {
         if (NvApi.GpuGetMemoryInfoEx is null)
         {
-            return (null, null);
+            return null;
         }
 
         try
@@ -623,18 +587,14 @@ public sealed class NvidiaGpuSensors : IDisposable
 
             if (NvApi.GpuGetMemoryInfoEx(handle, ref info) != NvApi.NvStatus.Ok || info.DedicatedVideoMemoryBytes == 0)
             {
-                return (null, null);
+                return null;
             }
 
-            ulong totalBytes = info.DedicatedVideoMemoryBytes;
-            ulong freeBytes = Math.Min(info.CurrentAvailableDedicatedVideoMemoryBytes, info.DedicatedVideoMemoryBytes);
-            ulong usedBytes = totalBytes >= freeBytes ? totalBytes - freeBytes : 0UL;
-
-            return (totalBytes, usedBytes);
+            return info.DedicatedVideoMemoryBytes;
         }
         catch
         {
-            return (null, null);
+            return null;
         }
     }
 }

@@ -7,7 +7,7 @@ namespace Monitor.Windows.Providers;
 
 /// <summary>
 /// GPU 使用率 (PDH "\GPU Engine(*)\Utilization Percentage") と VRAM
-/// (PDH "\GPU Adapter Memory(*)\Dedicated/Shared Usage" + DXGI の総容量) を供給する。
+/// (PDH "\GPU Adapter Memory(*)\Dedicated Usage" + DXGI の総容量) を供給する。
 /// PDH の GPU カウンターが存在しない環境 (古い Windows / RDP セッションなど) では
 /// IsAvailable=false のまま GpuSnapshot.Empty を返し続ける。
 /// </summary>
@@ -18,7 +18,6 @@ public sealed class GpuProvider : IMetricProvider<GpuSnapshot>
     private PdhQuery? _query;
     private PdhMultiCounter? _engineCounter;
     private PdhMultiCounter? _dedicatedMemoryCounter;
-    private PdhMultiCounter? _sharedMemoryCounter;
     private IReadOnlyList<DxgiAdapterInfo> _adapters = Array.Empty<DxgiAdapterInfo>();
     private bool _disposed;
 
@@ -61,7 +60,6 @@ public sealed class GpuProvider : IMetricProvider<GpuSnapshot>
             // zero) so its absence does not affect IsAvailable.
             _engineCounter = _query.AddMultiCounter(@"\GPU Engine(*)\Utilization Percentage");
             _dedicatedMemoryCounter = _query.AddMultiCounter(@"\GPU Adapter Memory(*)\Dedicated Usage");
-            _sharedMemoryCounter = _query.AddMultiCounter(@"\GPU Adapter Memory(*)\Shared Usage");
 
             IsAvailable = _engineCounter is not null;
 
@@ -114,19 +112,6 @@ public sealed class GpuProvider : IMetricProvider<GpuSnapshot>
                 }
             }
 
-            if (_sharedMemoryCounter is not null)
-            {
-                foreach (PdhCounterItem item in _sharedMemoryCounter.GetValues())
-                {
-                    if (!TryParseMemoryInstance(item.InstanceName, out long luid))
-                    {
-                        continue;
-                    }
-
-                    GetOrAddAccumulator(perAdapter, luid).SharedUsedBytes += ClampToBytes(item.Value);
-                }
-            }
-
             if (perAdapter.Count == 0)
             {
                 // Nothing recognizable in this sample (e.g. transient PDH hiccup); avoid reporting a
@@ -174,7 +159,6 @@ public sealed class GpuProvider : IMetricProvider<GpuSnapshot>
                     EngineComputePercent = Math.Clamp(acc.EngineCompute, 0.0, 100.0),
                     DedicatedUsedBytes = acc.DedicatedUsedBytes,
                     DedicatedTotalBytes = dedicatedTotal,
-                    SharedUsedBytes = acc.SharedUsedBytes,
                 });
 
                 fallbackIndex++;
@@ -469,7 +453,6 @@ public sealed class GpuProvider : IMetricProvider<GpuSnapshot>
         public double VideoProcessing;
         public double EngineCompute;
         public ulong DedicatedUsedBytes;
-        public ulong SharedUsedBytes;
         private Dictionary<string, double>? _otherEngines;
 
         public void AddEngine(ReadOnlySpan<char> engineType, double value)

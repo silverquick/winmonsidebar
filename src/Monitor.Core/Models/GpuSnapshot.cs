@@ -11,7 +11,6 @@ public sealed record GpuAdapterSnapshot
     public double EngineComputePercent { get; init; }
     public ulong DedicatedUsedBytes { get; init; }
     public ulong DedicatedTotalBytes { get; init; }
-    public ulong SharedUsedBytes { get; init; }
 
     // ↓ NVAPI 由来（非 NVIDIA / 取得失敗なら null）
     public double? TemperatureC { get; init; }
