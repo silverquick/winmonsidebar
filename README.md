@@ -58,9 +58,10 @@ dotnet build WindowsMonitor.sln -c Debug
 dotnet publish src\Monitor.App -c Release -r win-x64 --self-contained -p:PublishSingleFile=true -o out
 ```
 
-`out\Monitor.App.exe`（約 129MB）に .NET ランタイムごと同梱される。WPF のネイティブ DLL
-5 個（`wpfgfx_cor3.dll` 等）は単一ファイルに埋め込めないため exe と同じ場所に並ぶ。この 6 個を
-まとめて配置すれば .NET のインストールなしで動く。
+`out\Monitor.App.exe`（約 130MB）に .NET ランタイムごと同梱される。WPF・SkiaSharp 等の
+ネイティブ DLL（`wpfgfx_cor3.dll` / `PresentationNative_cor3.dll` / `D3DCompiler_47_cor3.dll` 等）は
+単一ファイルに埋め込めないため exe と同じ場所に並ぶ。`out\` の内容を丸ごと配置すれば
+.NET のインストールなしで動く（`*.pdb` は配布に不要）。
 
 ## 表示する情報
 
