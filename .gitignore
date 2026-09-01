@@ -2,9 +2,8 @@
 bin/
 obj/
 out/
-dist/
 
-## 発行成果物・雑多なログ
+## 雑多なログ
 /debug.log
 
 ## Visual Studio / Rider
