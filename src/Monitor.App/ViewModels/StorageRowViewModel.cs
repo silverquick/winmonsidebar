@@ -37,6 +37,8 @@ public sealed class StorageRowViewModel : INotifyPropertyChanged
     private bool _isReady = true;
     private string _tooltipText = "";
     private AlertLevel _alertLevel;
+    private AlertLevel _busyAlertLevel;
+    private AlertLevel _temperatureAlertLevel;
 
     // ----- ディスク見出し行 (Kind = Disk) -----
     private string _modelText = string.Empty;
@@ -77,11 +79,17 @@ public sealed class StorageRowViewModel : INotifyPropertyChanged
     /// ボリューム/ネットワーク行: ファイルシステム・ボリューム総容量。</summary>
     public string TooltipText { get => _tooltipText; private set => SetProperty(ref _tooltipText, value); }
 
-    /// <summary>この行の警告レベル。ディスク見出し行は温度（<see cref="AlertEvaluator.DiskTemperature"/>）、
+    /// <summary>この行の総合警告レベル。ディスク見出し行は温度とBusy警告の高い方、
     /// ボリューム行は空き容量（<see cref="AlertEvaluator.DriveCapacity"/>）、ネットワーク行は切断
     /// （<see cref="AlertEvaluator.NetworkDriveDisconnected"/>）から呼び出し側（<c>SidebarViewModel</c>）が
-    /// 判定して渡す。XAML 側でバー・値テキストの警告色切り替えに使う。</summary>
+    /// 判定して渡す。XAML 側でバー・グロー・値テキストの警告色切り替えに使う。</summary>
     public AlertLevel AlertLevel { get => _alertLevel; private set => SetProperty(ref _alertLevel, value); }
+
+    /// <summary>物理ディスクの Busy 継続警告レベル。</summary>
+    public AlertLevel BusyAlertLevel { get => _busyAlertLevel; private set => SetProperty(ref _busyAlertLevel, value); }
+
+    /// <summary>物理ディスクの温度警告レベル（温度テキストの前景色バインド用）。</summary>
+    public AlertLevel TemperatureAlertLevel { get => _temperatureAlertLevel; private set => SetProperty(ref _temperatureAlertLevel, value); }
 
     // ----- ディスク見出し行用プロパティ -----
 
@@ -136,7 +144,9 @@ public sealed class StorageRowViewModel : INotifyPropertyChanged
         string temperatureText,
         double writeBytesPerSec,
         string tooltipText,
-        AlertLevel alertLevel)
+        AlertLevel alertLevel,
+        AlertLevel busyAlertLevel = AlertLevel.None,
+        AlertLevel temperatureAlertLevel = AlertLevel.None)
     {
         Kind = StorageRowKind.Disk;
         ModelText = modelText;
@@ -147,6 +157,8 @@ public sealed class StorageRowViewModel : INotifyPropertyChanged
         TemperatureText = temperatureText;
         TooltipText = tooltipText;
         AlertLevel = alertLevel;
+        BusyAlertLevel = busyAlertLevel;
+        TemperatureAlertLevel = temperatureAlertLevel;
 
         PushWriteHistory(writeBytesPerSec);
     }
@@ -175,6 +187,8 @@ public sealed class StorageRowViewModel : INotifyPropertyChanged
         CapacityText = capacityText;
         TooltipText = tooltipText;
         AlertLevel = alertLevel;
+        BusyAlertLevel = AlertLevel.None;
+        TemperatureAlertLevel = AlertLevel.None;
     }
 
     /// <summary>書き込みレートを1点 push し、Sparkline 用のスナップショット配列を再生成する。

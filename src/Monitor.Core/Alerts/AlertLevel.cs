@@ -2,10 +2,10 @@ namespace Monitor.Core.Alerts;
 
 /// <summary>
 /// セクションが「ユーザーが手を打つべき状態」にあるかどうかの深刻度。
-/// 使用率が高いこと自体は対象にしない（CPU/GPU 100% はビルド中・ゲーム中なら正常、ディスク Busy 100% は
+/// 瞬間的な高使用率自体は対象にしない（CPU/GPU 100% はビルド中・ゲーム中なら正常、瞬間的なディスク Busy 100% は
 /// コピー中なら正常、物理メモリ使用率が高いのは Windows がキャッシュで埋める正常な挙動）。
-/// 警告するのは「枯渇」「温度」「障害」の3カテゴリだけ。判定ロジックは <see cref="AlertEvaluator"/> に、
-/// 閾値の定数は <see cref="AlertThresholds"/> に集約する（各 ViewModel には散らばらせない）。
+/// 警告するのは「枯渇」「温度」「障害」および異常に長く継続した場合のディスク高 Busy（観測警告）。
+/// 判定ロジックは <see cref="AlertEvaluator"/> に、閾値の定数は <see cref="AlertThresholds"/> に集約する（各 ViewModel には散らばらせない）。
 /// </summary>
 public enum AlertLevel
 {
