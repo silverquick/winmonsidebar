@@ -442,10 +442,29 @@ public sealed class DiskBusyAlertTrackerTests
         Assert.IsFalse(foreground.Contains("{Binding AlertLevel,"), "TemperatureText Foreground must not bind to row AlertLevel");
     }
 
+    [TestMethod]
+    public void XamlBinding_BusyPercentTextBindsToBusyAlertLevel()
+    {
+        var document = XDocument.Load(Path.Combine(AppContext.BaseDirectory, "TestData", "SidebarWindow.xaml"));
+        XNamespace presentation = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+
+        // StorageDiskRowTemplate 内の BusyPercentText TextBlock を探す
+        XElement? busyTextBlock = document
+            .Descendants(presentation + "TextBlock")
+            .FirstOrDefault(element => (string?)element.Attribute("Text") == "{Binding BusyPercentText}");
+
+        Assert.IsNotNull(busyTextBlock, "BusyPercentText TextBlock must exist in SidebarWindow.xaml");
+
+        string? foreground = (string?)busyTextBlock.Attribute("Foreground");
+        Assert.IsNotNull(foreground, "BusyPercentText must have a Foreground binding");
+        StringAssert.Contains(foreground, "BusyAlertLevel", "BusyPercentText Foreground must bind to BusyAlertLevel");
+        Assert.IsFalse(foreground.Contains("{Binding AlertLevel,"), "BusyPercentText Foreground must not bind to row AlertLevel");
+    }
+
     [STATestMethod]
     [DataRow(AlertLevel.None, false, (byte)0, (byte)0, (byte)0, 0.0, 0.0, (byte)0x00)]
-    [DataRow(AlertLevel.Caution, true, (byte)0xF0, (byte)0xC2, (byte)0x3C, 8.0, 0.90, (byte)0x40)]
-    [DataRow(AlertLevel.Critical, true, (byte)0xF0, (byte)0x4A, (byte)0x4A, 10.0, 1.0, (byte)0x55)]
+    [DataRow(AlertLevel.Caution, true, (byte)0xF0, (byte)0xC2, (byte)0x3C, 8.0, 0.90, (byte)0x70)]
+    [DataRow(AlertLevel.Critical, true, (byte)0xF0, (byte)0x4A, (byte)0x4A, 10.0, 1.0, (byte)0x90)]
     public void XamlTheme_StorageDiskHeaderStyle_AppliesDropShadowGlow(
         AlertLevel alertLevel,
         bool hasEffect,

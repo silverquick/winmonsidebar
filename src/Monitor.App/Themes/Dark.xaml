@@ -244,9 +244,9 @@
     <!-- ストレージ一覧の物理ディスク見出し行。ごく薄い背景（縞背景と同じ #08FFFFFF）でグループの頭を示す。
          上に3px マージンを空けてグループ間の区切りにする（最初のグループの上に空いても実害は無いため
          先頭だけ特別扱いはしていない）。
-         警告時（Caution / Critical）は行の背景を警告色にうっすら塗り、加えて DropShadowEffect による
-         グロー（ShadowDepth=0固定）を重ねる。当初はグロー単独（BlurRadius 4-5 / Opacity 0.6-0.8）で
-         設計したが、実機確認で「気づけない」との指摘があったため、背景の色面も併用し強めに調整した。 -->
+         警告時（Caution / Critical）は行の背景を警告色ではっきり塗る。DropShadowEffect によるグローは
+         環境（GPU/RDP等）によってはほぼ見えないことがあるため補助的な位置づけとし、視認性の主役は
+         不透明度の高い背景色と、BusyPercentText 自体の文字色（AlertLevelToBrushConverter 経由）にした。 -->
     <Style x:Key="StorageDiskHeaderStyle" TargetType="Border">
         <Setter Property="Background" Value="#08FFFFFF" />
         <Setter Property="Margin" Value="0,2,0,0" />
@@ -254,7 +254,7 @@
         <Setter Property="MinHeight" Value="16" />
         <Style.Triggers>
             <DataTrigger Binding="{Binding AlertLevel}" Value="{x:Static alerts:AlertLevel.Caution}">
-                <Setter Property="Background" Value="#40F0C23C" />
+                <Setter Property="Background" Value="#70F0C23C" />
                 <Setter Property="Effect">
                     <Setter.Value>
                         <DropShadowEffect ShadowDepth="0" BlurRadius="8" Opacity="0.90" Color="#F0C23C" />
@@ -262,7 +262,7 @@
                 </Setter>
             </DataTrigger>
             <DataTrigger Binding="{Binding AlertLevel}" Value="{x:Static alerts:AlertLevel.Critical}">
-                <Setter Property="Background" Value="#55F04A4A" />
+                <Setter Property="Background" Value="#90F04A4A" />
                 <Setter Property="Effect">
                     <Setter.Value>
                         <DropShadowEffect ShadowDepth="0" BlurRadius="10" Opacity="1.0" Color="#F04A4A" />

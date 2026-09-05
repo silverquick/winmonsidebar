@@ -313,7 +313,8 @@
                                                    Foreground="{StaticResource DiskAccentBrush}" />
                                         <TextBlock Grid.Column="3" Text="{Binding WriteText}" Style="{StaticResource ProcessValueStyle}" Margin="0,0,6,0"
                                                    Foreground="{StaticResource DiskWriteAccentBrush}" />
-                                        <TextBlock Grid.Column="4" Text="{Binding BusyPercentText}" Style="{StaticResource ProcessValueStyle}" Margin="0,0,6,0" />
+                                        <TextBlock Grid.Column="4" Text="{Binding BusyPercentText}" Style="{StaticResource ProcessValueStyle}" Margin="0,0,6,0"
+                                                   Foreground="{Binding BusyAlertLevel, Converter={StaticResource AlertLevelToBrushConverter}}" />
                                         <TextBlock Grid.Column="5" Text="{Binding TemperatureText}" Style="{StaticResource ProcessValueStyle}"
                                                    Foreground="{Binding TemperatureAlertLevel, Converter={StaticResource AlertLevelToBrushConverter}}" />
                                     </Grid>
