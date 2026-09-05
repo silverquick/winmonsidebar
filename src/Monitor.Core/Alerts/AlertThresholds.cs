@@ -55,14 +55,16 @@ public static class AlertThresholds
 
     // ===== 観測警告: ディスク高 Busy 継続 =====
     // 瞬間的な高 Busy (100%) は大きなコピーや正常な高負荷でも発生するため障害を断定するものではないが、
-    // 異常に長く高負荷が継続している観測事実を知らせる。
-    // 初期値: Caution=95%以上が2分継続、Critical=99%以上が10分継続、解除=85%未満が15秒継続。
+    // 高負荷が継続している観測事実にすぐ気づけるようにする。
+    // 初期値: Caution=95%以上が5秒継続、Critical=99%以上が15秒継続、解除=85%未満が15秒継続。
+    // 1秒スパイク単発は除外しつつ、実質的な高負荷は数秒で検知できるようユーザー要望に合わせて短縮した
+    // （当初は2分/10分の大幅な継続を要求していたが、実機確認で「反応が遅すぎる」と判断し短縮）。
     // 85〜95% は発報前なら継続を中断し、発報後ならレベルを維持するヒステリシス帯としてちらつきを防ぐ。
     public const double DiskBusyCautionPercent = 95.0;
-    public static readonly TimeSpan DiskBusyCautionDuration = TimeSpan.FromMinutes(2);
+    public static readonly TimeSpan DiskBusyCautionDuration = TimeSpan.FromSeconds(5);
 
     public const double DiskBusyCriticalPercent = 99.0;
-    public static readonly TimeSpan DiskBusyCriticalDuration = TimeSpan.FromMinutes(10);
+    public static readonly TimeSpan DiskBusyCriticalDuration = TimeSpan.FromSeconds(15);
 
     public const double DiskBusyRecoveryPercent = 85.0;
     public static readonly TimeSpan DiskBusyRecoveryDuration = TimeSpan.FromSeconds(15);
