@@ -257,12 +257,45 @@
         <Setter Property="Padding" Value="0,0,0,1" />
         <Setter Property="MinHeight" Value="16" />
         <Style.Triggers>
+            <!-- 静的な警告枠色 -->
             <DataTrigger Binding="{Binding AlertLevel}" Value="{x:Static alerts:AlertLevel.Caution}">
                 <Setter Property="BorderBrush" Value="#F0C23C" />
             </DataTrigger>
             <DataTrigger Binding="{Binding AlertLevel}" Value="{x:Static alerts:AlertLevel.Critical}">
                 <Setter Property="BorderBrush" Value="#F04A4A" />
             </DataTrigger>
+
+            <!-- OSのアニメーション表示設定が有効な場合のみ、発報時のパルスアニメーションを実行する -->
+            <MultiDataTrigger>
+                <MultiDataTrigger.Conditions>
+                    <Condition Binding="{Binding AlertLevel}" Value="{x:Static alerts:AlertLevel.Caution}" />
+                    <Condition Binding="{Binding Source={x:Static SystemParameters.ClientAreaAnimation}}" Value="True" />
+                </MultiDataTrigger.Conditions>
+                <MultiDataTrigger.EnterActions>
+                    <BeginStoryboard>
+                        <Storyboard>
+                            <DoubleAnimation Storyboard.TargetProperty="Opacity"
+                                             From="1.0" To="0.45" Duration="0:0:0.6"
+                                             AutoReverse="True" RepeatBehavior="2x" FillBehavior="Stop" />
+                        </Storyboard>
+                    </BeginStoryboard>
+                </MultiDataTrigger.EnterActions>
+            </MultiDataTrigger>
+            <MultiDataTrigger>
+                <MultiDataTrigger.Conditions>
+                    <Condition Binding="{Binding AlertLevel}" Value="{x:Static alerts:AlertLevel.Critical}" />
+                    <Condition Binding="{Binding Source={x:Static SystemParameters.ClientAreaAnimation}}" Value="True" />
+                </MultiDataTrigger.Conditions>
+                <MultiDataTrigger.EnterActions>
+                    <BeginStoryboard>
+                        <Storyboard>
+                            <DoubleAnimation Storyboard.TargetProperty="Opacity"
+                                             From="1.0" To="0.25" Duration="0:0:0.6"
+                                             AutoReverse="True" RepeatBehavior="3x" FillBehavior="Stop" />
+                        </Storyboard>
+                    </BeginStoryboard>
+                </MultiDataTrigger.EnterActions>
+            </MultiDataTrigger>
         </Style.Triggers>
     </Style>
 

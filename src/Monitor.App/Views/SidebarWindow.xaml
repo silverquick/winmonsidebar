@@ -268,58 +268,60 @@
                              数値列はすべて固定幅（SharedSizeGroup は使わない）: 桁数が変わるたび
                              （例 "9M"→"12M"）に列幅が動いて隣の * 列や他の数値がずれるのを防ぐため。 -->
                         <DataTemplate x:Key="StorageDiskRowTemplate">
-                            <Border Style="{StaticResource StorageDiskHeaderStyle}" ToolTip="{Binding TooltipText}">
-                                <Grid>
-                                    <!-- 背面: 書き込み履歴グラフ。Height は指定せず、重ねた Grid の高さ
-                                         （= 前面の情報行 Grid の自然な高さ）いっぱいに広がる。文字の可読性を
-                                         優先するため薄くする。書き込みは絶対値なので上部合計グラフと同じく
-                                         AutoScale で都度スケールする。
-                                         Values は float[] 型（配列型）の依存関係プロパティのため、DataTemplate 内で
-                                         属性として直接バインドすると MC4102 "PropertyArrayStart" エラーになる
-                                         （WPF のコンパイラの既知の制約）。Style の Setter 経由にすると回避できる。 -->
-                                    <controls:Sparkline Opacity="0.4" AutoScale="True"
-                                                         Stroke="{StaticResource DiskWriteAccentBrush}" Fill="{StaticResource DiskWriteFillBrush}">
-                                        <controls:Sparkline.Style>
-                                            <Style TargetType="controls:Sparkline">
-                                                <Setter Property="Values" Value="{Binding WriteHistory}" />
-                                            </Style>
-                                        </controls:Sparkline.Style>
-                                    </controls:Sparkline>
-                                    <!-- 前面: 情報行。 -->
-                                    <Grid VerticalAlignment="Center">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="*" />
-                                            <!-- バス種別 "NVMe SSD"/"SATA HDD" は最大8文字。Cascadia Mono 11px は
-                                                 1文字約6.6pxなので 8×6.6≒53px。少し余裕を見て54px。 -->
-                                            <ColumnDefinition Width="54" />
-                                            <!-- 読み込み/書き込み: ShortRate の最長は "999T"/"9.9T" などの4文字≒26px。
-                                                 TextBlock 側の右マージン6pxを足して34pxにする（列幅=テキスト幅ちょうどだと
-                                                 Arrange で列幅にクリップされて数字が欠ける）。 -->
-                                            <ColumnDefinition Width="34" />
-                                            <ColumnDefinition Width="34" />
-                                            <!-- Busy%: 最長 "100%" の4文字≒26px。右マージン6px込みで34px。 -->
-                                            <ColumnDefinition Width="34" />
-                                            <!-- 温度: 最長 "100°C" の5文字≒33px。最終列で右マージンが無いので36pxで足りる。 -->
-                                            <ColumnDefinition Width="36" />
-                                        </Grid.ColumnDefinitions>
+                            <Grid Margin="0,1,0,0" ToolTip="{Binding TooltipText}">
+                                <!-- 背景および枠線（警告発報時の枠線パルスアニメーション対象） -->
+                                <Border Style="{StaticResource StorageDiskHeaderStyle}" Margin="0" />
+                                <!-- 背面: 書き込み履歴グラフ。Height は指定せず、重ねた Grid の高さ
+                                     （= 前面の情報行 Grid の自然な高さ）いっぱいに広がる。文字の可読性を
+                                     優先するため薄くする。書き込みは絶対値なので上部合計グラフと同じく
+                                     AutoScale で都度スケールする。
+                                     Values は float[] 型（配列型）の依存関係プロパティのため、DataTemplate 内で
+                                     属性として直接バインドすると MC4102 "PropertyArrayStart" エラーになる
+                                     （WPF のコンパイラの既知の制約）。Style の Setter 経由にすると回避できる。 -->
+                                <controls:Sparkline Opacity="0.4" AutoScale="True"
+                                                     Stroke="{StaticResource DiskWriteAccentBrush}" Fill="{StaticResource DiskWriteFillBrush}"
+                                                     Margin="1,1,1,2">
+                                    <controls:Sparkline.Style>
+                                        <Style TargetType="controls:Sparkline">
+                                            <Setter Property="Values" Value="{Binding WriteHistory}" />
+                                        </Style>
+                                    </controls:Sparkline.Style>
+                                </controls:Sparkline>
+                                <!-- 前面: 情報行。枠線アニメーション中も文字の可読性を維持するため
+                                     アニメーションする Border の外側（同階層）に配置する。 -->
+                                <Grid VerticalAlignment="Center" Margin="1,1,1,2">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <!-- バス種別 "NVMe SSD"/"SATA HDD" は最大8文字。Cascadia Mono 11px は
+                                             1文字約6.6pxなので 8×6.6≒53px。少し余裕を見て54px。 -->
+                                        <ColumnDefinition Width="54" />
+                                        <!-- 読み込み/書き込み: ShortRate の最長は "999T"/"9.9T" などの4文字≒26px。
+                                             TextBlock 側の右マージン6pxを足して34pxにする（列幅=テキスト幅ちょうどだと
+                                             Arrange で列幅にクリップされて数字が欠ける）。 -->
+                                        <ColumnDefinition Width="34" />
+                                        <ColumnDefinition Width="34" />
+                                        <!-- Busy%: 最長 "100%" の4文字≒26px。右マージン6px込みで34px。 -->
+                                        <ColumnDefinition Width="34" />
+                                        <!-- 温度: 最長 "100°C" の5文字≒33px。最終列で右マージンが無いので36pxで足りる。 -->
+                                        <ColumnDefinition Width="36" />
+                                    </Grid.ColumnDefinitions>
 
-                                        <TextBlock Grid.Column="0" Text="{Binding ModelText}" Style="{StaticResource ProcessNameStyle}"
-                                                   FontWeight="SemiBold" TextTrimming="CharacterEllipsis" Margin="0,0,6,0" />
-                                        <TextBlock Grid.Column="1" Text="{Binding BusTypeText}" Style="{StaticResource SubTextStyle}"
-                                                   HorizontalAlignment="Left" VerticalAlignment="Center" Margin="0,0,6,0" />
-                                        <!-- 読み・書きの列には見出しが無いので、上部合計グラフと同じ色を付けて
-                                             どちらの列かが色で分かるようにする。 -->
-                                        <TextBlock Grid.Column="2" Text="{Binding ReadText}" Style="{StaticResource ProcessValueStyle}" Margin="0,0,6,0"
-                                                   Foreground="{StaticResource DiskAccentBrush}" />
-                                        <TextBlock Grid.Column="3" Text="{Binding WriteText}" Style="{StaticResource ProcessValueStyle}" Margin="0,0,6,0"
-                                                   Foreground="{StaticResource DiskWriteAccentBrush}" />
-                                        <TextBlock Grid.Column="4" Text="{Binding BusyPercentText}" Style="{StaticResource ProcessValueStyle}" Margin="0,0,6,0"
-                                                   Foreground="{Binding BusyAlertLevel, Converter={StaticResource AlertLevelToBrushConverter}}" />
-                                        <TextBlock Grid.Column="5" Text="{Binding TemperatureText}" Style="{StaticResource ProcessValueStyle}"
-                                                   Foreground="{Binding TemperatureAlertLevel, Converter={StaticResource AlertLevelToBrushConverter}}" />
-                                    </Grid>
+                                    <TextBlock Grid.Column="0" Text="{Binding ModelText}" Style="{StaticResource ProcessNameStyle}"
+                                               FontWeight="SemiBold" TextTrimming="CharacterEllipsis" Margin="0,0,6,0" />
+                                    <TextBlock Grid.Column="1" Text="{Binding BusTypeText}" Style="{StaticResource SubTextStyle}"
+                                               HorizontalAlignment="Left" VerticalAlignment="Center" Margin="0,0,6,0" />
+                                    <!-- 読み・書きの列には見出しが無いので、上部合計グラフと同じ色を付けて
+                                         どちらの列かが色で分かるようにする。 -->
+                                    <TextBlock Grid.Column="2" Text="{Binding ReadText}" Style="{StaticResource ProcessValueStyle}" Margin="0,0,6,0"
+                                               Foreground="{StaticResource DiskAccentBrush}" />
+                                    <TextBlock Grid.Column="3" Text="{Binding WriteText}" Style="{StaticResource ProcessValueStyle}" Margin="0,0,6,0"
+                                               Foreground="{StaticResource DiskWriteAccentBrush}" />
+                                    <TextBlock Grid.Column="4" Text="{Binding BusyPercentText}" Style="{StaticResource ProcessValueStyle}" Margin="0,0,6,0"
+                                               Foreground="{Binding BusyAlertLevel, Converter={StaticResource AlertLevelToBrushConverter}}" />
+                                    <TextBlock Grid.Column="5" Text="{Binding TemperatureText}" Style="{StaticResource ProcessValueStyle}"
+                                               Foreground="{Binding TemperatureAlertLevel, Converter={StaticResource AlertLevelToBrushConverter}}" />
                                 </Grid>
-                            </Border>
+                            </Grid>
                         </DataTemplate>
 
                         <!-- ボリューム行 (Kind = Volume) / ネットワーク行 (Kind = Network) 共通レイアウト。

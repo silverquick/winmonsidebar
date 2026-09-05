@@ -1,7 +1,9 @@
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Data;
 using System.Windows.Media;
+using System.Windows.Media.Animation;
 using System.Windows.Media.Effects;
 using System.Windows.Threading;
 using System.Xml.Linq;
@@ -492,6 +494,98 @@ public sealed class DiskBusyAlertTrackerTests
             Color.FromArgb(alpha, red, green, blue),
             ((SolidColorBrush)border.BorderBrush).Color,
             "BorderBrush must be transparent when None, and the alert color when Caution/Critical.");
+    }
+
+    [STATestMethod]
+    public void XamlTheme_StorageDiskHeaderStyle_PulseAnimationStoryboardsConfigured()
+    {
+        var resources = (ResourceDictionary)Application.LoadComponent(
+            new Uri("/Monitor.App;component/Themes/Dark.xaml", UriKind.Relative));
+
+        var style = (Style)resources["StorageDiskHeaderStyle"];
+        Assert.IsNotNull(style, "StorageDiskHeaderStyle must exist in Dark.xaml");
+
+        // Caution 用と Critical 用の MultiDataTrigger を検索
+        MultiDataTrigger? cautionTrigger = null;
+        MultiDataTrigger? criticalTrigger = null;
+
+        foreach (var trigger in style.Triggers)
+        {
+            if (trigger is MultiDataTrigger mdt)
+            {
+                bool hasCaution = mdt.Conditions.OfType<Condition>().Any(c =>
+                    c.Value is AlertLevel.Caution);
+                bool hasCritical = mdt.Conditions.OfType<Condition>().Any(c =>
+                    c.Value is AlertLevel.Critical);
+                bool hasClientAnimation = mdt.Conditions.OfType<Condition>().Any(c =>
+                    c.Value?.ToString() == "True" &&
+                    c.Binding is System.Windows.Data.Binding b &&
+                    b.Source is bool);
+
+                if (hasCaution && hasClientAnimation)
+                {
+                    cautionTrigger = mdt;
+                }
+                else if (hasCritical && hasClientAnimation)
+                {
+                    criticalTrigger = mdt;
+                }
+            }
+        }
+
+        // Caution パルスアニメーションの検証 (1.0 -> 0.45 -> 1.0, 1.2秒/周期, 2周期=2.4秒, FillBehavior=Stop)
+        Assert.IsNotNull(cautionTrigger, "MultiDataTrigger for Caution pulse animation respecting ClientAreaAnimation must exist");
+        Assert.AreEqual(1, cautionTrigger.EnterActions.Count, "Caution trigger must have exactly 1 EnterAction");
+        var cautionBeginStoryboard = (BeginStoryboard)cautionTrigger.EnterActions[0];
+        Assert.AreEqual(1, cautionBeginStoryboard.Storyboard.Children.Count);
+        var cautionAnim = (DoubleAnimation)cautionBeginStoryboard.Storyboard.Children[0];
+        Assert.AreEqual("Opacity", Storyboard.GetTargetProperty(cautionAnim).Path);
+        Assert.AreEqual(1.0, cautionAnim.From);
+        Assert.AreEqual(0.45, cautionAnim.To);
+        Assert.AreEqual(TimeSpan.FromSeconds(0.6), cautionAnim.Duration.TimeSpan);
+        Assert.IsTrue(cautionAnim.AutoReverse);
+        Assert.AreEqual(new RepeatBehavior(2), cautionAnim.RepeatBehavior);
+        Assert.AreEqual(FillBehavior.Stop, cautionAnim.FillBehavior);
+
+        // Critical パルスアニメーションの検証 (1.0 -> 0.25 -> 1.0, 1.2秒/周期, 3周期=3.6秒, FillBehavior=Stop)
+        Assert.IsNotNull(criticalTrigger, "MultiDataTrigger for Critical pulse animation respecting ClientAreaAnimation must exist");
+        Assert.AreEqual(1, criticalTrigger.EnterActions.Count, "Critical trigger must have exactly 1 EnterAction");
+        var criticalBeginStoryboard = (BeginStoryboard)criticalTrigger.EnterActions[0];
+        Assert.AreEqual(1, criticalBeginStoryboard.Storyboard.Children.Count);
+        var criticalAnim = (DoubleAnimation)criticalBeginStoryboard.Storyboard.Children[0];
+        Assert.AreEqual("Opacity", Storyboard.GetTargetProperty(criticalAnim).Path);
+        Assert.AreEqual(1.0, criticalAnim.From);
+        Assert.AreEqual(0.25, criticalAnim.To);
+        Assert.AreEqual(TimeSpan.FromSeconds(0.6), criticalAnim.Duration.TimeSpan);
+        Assert.IsTrue(criticalAnim.AutoReverse);
+        Assert.AreEqual(new RepeatBehavior(3), criticalAnim.RepeatBehavior);
+        Assert.AreEqual(FillBehavior.Stop, criticalAnim.FillBehavior);
+    }
+
+    [TestMethod]
+    public void XamlBinding_StorageDiskRowTemplate_SeparatesBorderAndTextHierarchy()
+    {
+        var document = XDocument.Load(Path.Combine(AppContext.BaseDirectory, "TestData", "SidebarWindow.xaml"));
+        XNamespace presentation = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+
+        // StorageDiskRowTemplate DataTemplate を探す
+        XElement? diskTemplate = document
+            .Descendants(presentation + "DataTemplate")
+            .FirstOrDefault(element => (string?)element.Attribute(XNamespace.Get("http://schemas.microsoft.com/winfx/2006/xaml") + "Key") == "StorageDiskRowTemplate");
+
+        Assert.IsNotNull(diskTemplate, "StorageDiskRowTemplate must exist in SidebarWindow.xaml");
+
+        // StorageDiskHeaderStyle を適用している Border を探す
+        XElement? headerBorder = diskTemplate
+            .Descendants(presentation + "Border")
+            .FirstOrDefault(element => (string?)element.Attribute("Style") == "{StaticResource StorageDiskHeaderStyle}");
+
+        Assert.IsNotNull(headerBorder, "Border with StorageDiskHeaderStyle must exist in StorageDiskRowTemplate");
+
+        // パルスアニメーションで文字やスパークラインが巻き込まれて暗くならないよう、
+        // Border 内に TextBlock や Sparkline が入れ子になっていない（同階層のオーバーレイ/背景構造になっている）ことを検証
+        int textBlocksInsideBorder = headerBorder.Descendants(presentation + "TextBlock").Count();
+        Assert.AreEqual(0, textBlocksInsideBorder, "TextBlocks must not be child elements inside the animated StorageDiskHeader Border");
     }
 
     private sealed class AlertLevelSource(AlertLevel alertLevel)
