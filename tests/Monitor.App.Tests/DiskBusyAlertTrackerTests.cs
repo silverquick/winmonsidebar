@@ -462,18 +462,15 @@ public sealed class DiskBusyAlertTrackerTests
     }
 
     [STATestMethod]
-    [DataRow(AlertLevel.None, false, (byte)0, (byte)0, (byte)0, 0.0, 0.0, (byte)0x00)]
-    [DataRow(AlertLevel.Caution, true, (byte)0xF0, (byte)0xC2, (byte)0x3C, 8.0, 0.90, (byte)0x70)]
-    [DataRow(AlertLevel.Critical, true, (byte)0xF0, (byte)0x4A, (byte)0x4A, 10.0, 1.0, (byte)0x90)]
-    public void XamlTheme_StorageDiskHeaderStyle_AppliesDropShadowGlow(
+    [DataRow(AlertLevel.None, (byte)0xFF, (byte)0xFF, (byte)0xFF, (byte)0x00)]
+    [DataRow(AlertLevel.Caution, (byte)0xF0, (byte)0xC2, (byte)0x3C, (byte)0xFF)]
+    [DataRow(AlertLevel.Critical, (byte)0xF0, (byte)0x4A, (byte)0x4A, (byte)0xFF)]
+    public void XamlTheme_StorageDiskHeaderStyle_AppliesBorderOutline(
         AlertLevel alertLevel,
-        bool hasEffect,
         byte red,
         byte green,
         byte blue,
-        double blurRadius,
-        double opacity,
-        byte backgroundAlpha)
+        byte alpha)
     {
         var resources = (ResourceDictionary)Application.LoadComponent(
             new Uri("/Monitor.App;component/Themes/Dark.xaml", UriKind.Relative));
@@ -487,24 +484,14 @@ public sealed class DiskBusyAlertTrackerTests
         border.ApplyTemplate();
         Dispatcher.CurrentDispatcher.Invoke(static () => { }, DispatcherPriority.DataBind);
 
-        if (!hasEffect)
-        {
-            Assert.IsNull(border.Effect, "Normal level (None) must not have an Effect applied.");
-            Assert.AreEqual(Color.FromArgb(0x08, 0xFF, 0xFF, 0xFF), ((SolidColorBrush)border.Background).Color, "Normal level must keep the default faint background.");
-        }
-        else
-        {
-            Assert.IsTrue(border.Effect is DropShadowEffect, "Caution/Critical must apply a DropShadowEffect.");
-            var dropShadow = (DropShadowEffect)border.Effect;
-            Assert.AreEqual(Color.FromRgb(red, green, blue), dropShadow.Color);
-            Assert.AreEqual(0.0, dropShadow.ShadowDepth, "ShadowDepth must be 0 for uniform glow.");
-            Assert.AreEqual(blurRadius, dropShadow.BlurRadius, 0.01);
-            Assert.AreEqual(opacity, dropShadow.Opacity, 0.01);
-            Assert.AreEqual(
-                Color.FromArgb(backgroundAlpha, red, green, blue),
-                ((SolidColorBrush)border.Background).Color,
-                "Caution/Critical must tint the row background with the alert color.");
-        }
+        // BorderThickness は警告の有無にかかわらず常に 1 を維持する（レイアウトサイズを変えないため）。
+        Assert.AreEqual(new Thickness(1), border.BorderThickness, "BorderThickness must stay constant regardless of alert level.");
+        Assert.IsNull(border.Effect, "No DropShadowEffect should be applied; the border outline alone conveys the alert.");
+        Assert.AreEqual(Color.FromArgb(0x08, 0xFF, 0xFF, 0xFF), ((SolidColorBrush)border.Background).Color, "Background must stay the default faint tint regardless of alert level.");
+        Assert.AreEqual(
+            Color.FromArgb(alpha, red, green, blue),
+            ((SolidColorBrush)border.BorderBrush).Color,
+            "BorderBrush must be transparent when None, and the alert color when Caution/Critical.");
     }
 
     private sealed class AlertLevelSource(AlertLevel alertLevel)
