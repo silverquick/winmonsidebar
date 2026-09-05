@@ -269,27 +269,30 @@
                              （例 "9M"→"12M"）に列幅が動いて隣の * 列や他の数値がずれるのを防ぐため。 -->
                         <DataTemplate x:Key="StorageDiskRowTemplate">
                             <Grid Margin="0,1,0,0" ToolTip="{Binding TooltipText}">
-                                <!-- 背景および枠線（警告発報時の枠線パルスアニメーション対象） -->
+                                <!-- 背景および枠線（警告発報時の枠線パルスアニメーション対象）。
+                                     BorderThickness分の内側マージンは、この行の中身（Sparkline・情報行）を
+                                     まとめて内包する下の Grid の Margin="1,1,1,2" 1箇所だけで表現し、
+                                     兄弟要素ごとに同じ値を重複させない。 -->
                                 <Border Style="{StaticResource StorageDiskHeaderStyle}" Margin="0" />
-                                <!-- 背面: 書き込み履歴グラフ。Height は指定せず、重ねた Grid の高さ
-                                     （= 前面の情報行 Grid の自然な高さ）いっぱいに広がる。文字の可読性を
-                                     優先するため薄くする。書き込みは絶対値なので上部合計グラフと同じく
-                                     AutoScale で都度スケールする。
-                                     Values は float[] 型（配列型）の依存関係プロパティのため、DataTemplate 内で
-                                     属性として直接バインドすると MC4102 "PropertyArrayStart" エラーになる
-                                     （WPF のコンパイラの既知の制約）。Style の Setter 経由にすると回避できる。 -->
-                                <controls:Sparkline Opacity="0.4" AutoScale="True"
-                                                     Stroke="{StaticResource DiskWriteAccentBrush}" Fill="{StaticResource DiskWriteFillBrush}"
-                                                     Margin="1,1,1,2">
-                                    <controls:Sparkline.Style>
-                                        <Style TargetType="controls:Sparkline">
-                                            <Setter Property="Values" Value="{Binding WriteHistory}" />
-                                        </Style>
-                                    </controls:Sparkline.Style>
-                                </controls:Sparkline>
-                                <!-- 前面: 情報行。枠線アニメーション中も文字の可読性を維持するため
-                                     アニメーションする Border の外側（同階層）に配置する。 -->
-                                <Grid VerticalAlignment="Center" Margin="1,1,1,2">
+                                <Grid Margin="1,1,1,2">
+                                    <!-- 背面: 書き込み履歴グラフ。Height は指定せず、重ねた Grid の高さ
+                                         （= 前面の情報行 Grid の自然な高さ）いっぱいに広がる。文字の可読性を
+                                         優先するため薄くする。書き込みは絶対値なので上部合計グラフと同じく
+                                         AutoScale で都度スケールする。
+                                         Values は float[] 型（配列型）の依存関係プロパティのため、DataTemplate 内で
+                                         属性として直接バインドすると MC4102 "PropertyArrayStart" エラーになる
+                                         （WPF のコンパイラの既知の制約）。Style の Setter 経由にすると回避できる。 -->
+                                    <controls:Sparkline Opacity="0.4" AutoScale="True"
+                                                         Stroke="{StaticResource DiskWriteAccentBrush}" Fill="{StaticResource DiskWriteFillBrush}">
+                                        <controls:Sparkline.Style>
+                                            <Style TargetType="controls:Sparkline">
+                                                <Setter Property="Values" Value="{Binding WriteHistory}" />
+                                            </Style>
+                                        </controls:Sparkline.Style>
+                                    </controls:Sparkline>
+                                    <!-- 前面: 情報行。枠線アニメーション中も文字の可読性を維持するため
+                                         アニメーションする Border の外側（同階層）に配置する。 -->
+                                    <Grid VerticalAlignment="Center">
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="*" />
                                         <!-- バス種別 "NVMe SSD"/"SATA HDD" は最大8文字。Cascadia Mono 11px は
@@ -320,6 +323,7 @@
                                                Foreground="{Binding BusyAlertLevel, Converter={StaticResource AlertLevelToBrushConverter}}" />
                                     <TextBlock Grid.Column="5" Text="{Binding TemperatureText}" Style="{StaticResource ProcessValueStyle}"
                                                Foreground="{Binding TemperatureAlertLevel, Converter={StaticResource AlertLevelToBrushConverter}}" />
+                                    </Grid>
                                 </Grid>
                             </Grid>
                         </DataTemplate>

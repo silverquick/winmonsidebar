@@ -254,25 +254,28 @@
         <Setter Property="BorderBrush" Value="Transparent" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="Margin" Value="0,1,0,0" />
-        <Setter Property="Padding" Value="0,0,0,1" />
         <Setter Property="MinHeight" Value="16" />
         <Style.Triggers>
-            <!-- 静的な警告枠色 -->
+            <!-- 静的な警告枠色。他の警告色トリガーと同じ AlertCautionBrush/AlertCriticalBrush を参照し、
+                 パレット変更時に一箇所で追従できるようにする。 -->
             <DataTrigger Binding="{Binding AlertLevel}" Value="{x:Static alerts:AlertLevel.Caution}">
-                <Setter Property="BorderBrush" Value="#F0C23C" />
+                <Setter Property="BorderBrush" Value="{StaticResource AlertCautionBrush}" />
             </DataTrigger>
             <DataTrigger Binding="{Binding AlertLevel}" Value="{x:Static alerts:AlertLevel.Critical}">
-                <Setter Property="BorderBrush" Value="#F04A4A" />
+                <Setter Property="BorderBrush" Value="{StaticResource AlertCriticalBrush}" />
             </DataTrigger>
 
-            <!-- OSのアニメーション表示設定が有効な場合のみ、発報時のパルスアニメーションを実行する -->
+            <!-- OSのアニメーション表示設定が有効な場合のみ、発報時のパルスアニメーションを実行する。
+                 ExitActions で StopStoryboard するのは、パルス実行中に AlertLevel が変わった場合
+                 （解除、またはCaution/Critical間の遷移）に、進行中のアニメーションを即座に打ち切って
+                 中途半端な不透明度のまま固まる・解除後も点滅し続けるのを防ぐため。 -->
             <MultiDataTrigger>
                 <MultiDataTrigger.Conditions>
                     <Condition Binding="{Binding AlertLevel}" Value="{x:Static alerts:AlertLevel.Caution}" />
                     <Condition Binding="{Binding Source={x:Static SystemParameters.ClientAreaAnimation}}" Value="True" />
                 </MultiDataTrigger.Conditions>
                 <MultiDataTrigger.EnterActions>
-                    <BeginStoryboard>
+                    <BeginStoryboard x:Name="CautionPulseStoryboard">
                         <Storyboard>
                             <DoubleAnimation Storyboard.TargetProperty="Opacity"
                                              From="1.0" To="0.45" Duration="0:0:0.6"
@@ -280,6 +283,9 @@
                         </Storyboard>
                     </BeginStoryboard>
                 </MultiDataTrigger.EnterActions>
+                <MultiDataTrigger.ExitActions>
+                    <StopStoryboard BeginStoryboardName="CautionPulseStoryboard" />
+                </MultiDataTrigger.ExitActions>
             </MultiDataTrigger>
             <MultiDataTrigger>
                 <MultiDataTrigger.Conditions>
@@ -287,7 +293,7 @@
                     <Condition Binding="{Binding Source={x:Static SystemParameters.ClientAreaAnimation}}" Value="True" />
                 </MultiDataTrigger.Conditions>
                 <MultiDataTrigger.EnterActions>
-                    <BeginStoryboard>
+                    <BeginStoryboard x:Name="CriticalPulseStoryboard">
                         <Storyboard>
                             <DoubleAnimation Storyboard.TargetProperty="Opacity"
                                              From="1.0" To="0.25" Duration="0:0:0.6"
@@ -295,6 +301,9 @@
                         </Storyboard>
                     </BeginStoryboard>
                 </MultiDataTrigger.EnterActions>
+                <MultiDataTrigger.ExitActions>
+                    <StopStoryboard BeginStoryboardName="CriticalPulseStoryboard" />
+                </MultiDataTrigger.ExitActions>
             </MultiDataTrigger>
         </Style.Triggers>
     </Style>
