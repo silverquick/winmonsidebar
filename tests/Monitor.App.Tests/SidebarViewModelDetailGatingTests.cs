@@ -24,6 +24,8 @@ public sealed class SidebarViewModelDetailGatingTests
         double diskRead = 1024 * 1024,
         double diskWrite = 2048 * 1024,
         double diskTemp = 42.0,
+        double diskBusy = 10.0,
+        AlertLevel diskBusyAlertLevel = AlertLevel.None,
         double netRecv = 500_000,
         double netSend = 100_000,
         double thermalCpu = 60.0,
@@ -32,7 +34,8 @@ public sealed class SidebarViewModelDetailGatingTests
         IReadOnlyList<MemoryModuleInfo>? customModules = null,
         IReadOnlyList<PageFileInfo>? customPageFiles = null,
         IReadOnlyList<ProcessInfo>? customProcesses = null,
-        ThermalSnapshot? customThermal = null)
+        ThermalSnapshot? customThermal = null,
+        DiskSnapshot? customDisk = null)
     {
         var cpu = new CpuSnapshot
         {
@@ -116,11 +119,11 @@ public sealed class SidebarViewModelDetailGatingTests
             SpeedMhz = 3200,
         };
 
-        var disk = new DiskSnapshot
+        var disk = customDisk ?? new DiskSnapshot
         {
             TotalReadBytesPerSec = diskRead,
             TotalWriteBytesPerSec = diskWrite,
-            BusyPercent = 10.0,
+            BusyPercent = diskBusy,
             Devices = new DiskDeviceSnapshot[]
             {
                 new()
@@ -132,7 +135,8 @@ public sealed class SidebarViewModelDetailGatingTests
                     CapacityBytes = 1000UL * 1024 * 1024 * 1024,
                     ReadBytesPerSec = diskRead,
                     WriteBytesPerSec = diskWrite,
-                    BusyPercent = 10.0,
+                    BusyPercent = diskBusy,
+                    BusyAlertLevel = diskBusyAlertLevel,
                     TemperatureC = diskTemp,
                     WarningTemperatureC = 70.0,
                     CriticalTemperatureC = 80.0,
@@ -483,6 +487,46 @@ public sealed class SidebarViewModelDetailGatingTests
         Assert.AreEqual(AlertLevel.None, vm.MemoryAlertLevel, "Memory alert should clear to None while collapsed.");
         Assert.AreEqual(AlertLevel.None, vm.StorageAlertLevel, "Storage alert should clear to None while collapsed.");
         Assert.AreEqual(AlertLevel.None, vm.ThermalAlertLevel, "Thermal alert should clear to None while collapsed.");
+    }
+
+    [STATestMethod]
+    public void Collapsed_StorageBusyAlert_UpdatesAndClearsHeaderAlertLevel()
+    {
+        var hub = MetricsHub.CreateForTest();
+        var initial = CreateSampleSnapshot(diskBusy: 10.0, diskBusyAlertLevel: AlertLevel.None);
+        hub.PublishSnapshotForTest(initial);
+
+        var settings = new AppSettings();
+        settings.ExpandedSections["storage"] = false;
+
+        using var vm = new SidebarViewModel(hub, Dispatcher.CurrentDispatcher, settings);
+
+        // 折りたたみ初期状態
+        Assert.IsFalse(vm.IsStorageExpanded);
+        Assert.AreEqual(0, vm.StorageRows.Count);
+        Assert.AreEqual(AlertLevel.None, vm.StorageAlertLevel);
+
+        // 1. Caution 状態のディスクスナップショットを発行
+        var cautionSnapshot = CreateSampleSnapshot(diskBusy: 95.0, diskBusyAlertLevel: AlertLevel.Caution);
+        hub.PublishSnapshotForTest(cautionSnapshot);
+        vm.ApplyLatestSnapshot();
+
+        Assert.AreEqual(AlertLevel.Caution, vm.StorageAlertLevel, "StorageAlertLevel must reflect Caution busy alert while collapsed.");
+        Assert.AreEqual(0, vm.StorageRows.Count, "StorageRows must remain unpopulated while collapsed.");
+
+        // 2. Critical 状態へ遷移
+        var criticalSnapshot = CreateSampleSnapshot(diskBusy: 99.0, diskBusyAlertLevel: AlertLevel.Critical);
+        hub.PublishSnapshotForTest(criticalSnapshot);
+        vm.ApplyLatestSnapshot();
+
+        Assert.AreEqual(AlertLevel.Critical, vm.StorageAlertLevel, "StorageAlertLevel must reflect Critical busy alert while collapsed.");
+
+        // 3. 正常値（None）へ復帰
+        var clearedSnapshot = CreateSampleSnapshot(diskBusy: 20.0, diskBusyAlertLevel: AlertLevel.None);
+        hub.PublishSnapshotForTest(clearedSnapshot);
+        vm.ApplyLatestSnapshot();
+
+        Assert.AreEqual(AlertLevel.None, vm.StorageAlertLevel, "StorageAlertLevel must clear to None when busy alert is cleared.");
     }
 
     [STATestMethod]

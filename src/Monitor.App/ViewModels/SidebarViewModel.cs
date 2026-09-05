@@ -969,6 +969,7 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
         {
             double? temperature = d.TemperatureC ?? FindStorageTemperature(thermal.StorageTemperatures, d.Model);
             level = MaxLevel(level, AlertEvaluator.DiskTemperature(temperature, d.WarningTemperatureC, d.CriticalTemperatureC, d.IsSsd));
+            level = MaxLevel(level, d.BusyAlertLevel);
             if (level == AlertLevel.Critical)
             {
                 return AlertLevel.Critical;
@@ -1007,10 +1008,12 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
         string temperatureText = ByteFormatter.Temperature(temperature);
         string tooltipText = BuildDiskTooltip(d);
         double writeBytesPerSec = d.WriteBytesPerSec;
-        AlertLevel alertLevel = AlertEvaluator.DiskTemperature(temperature, d.WarningTemperatureC, d.CriticalTemperatureC, d.IsSsd);
+        AlertLevel temperatureAlertLevel = AlertEvaluator.DiskTemperature(temperature, d.WarningTemperatureC, d.CriticalTemperatureC, d.IsSsd);
+        AlertLevel busyAlertLevel = d.BusyAlertLevel;
+        AlertLevel alertLevel = MaxLevel(temperatureAlertLevel, busyAlertLevel);
 
         return row => row.UpdateAsDisk(
-            modelText, busTypeText, readText, writeText, busyPercentText, temperatureText, writeBytesPerSec, tooltipText, alertLevel);
+            modelText, busTypeText, readText, writeText, busyPercentText, temperatureText, writeBytesPerSec, tooltipText, alertLevel, busyAlertLevel, temperatureAlertLevel);
     }
 
     /// <summary>ボリューム行/ネットワーク行1件分の更新アクションを組み立てる。列構成は共通なので
@@ -1091,7 +1094,7 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
     /// 確認用にフルの値をここにも残す。</summary>
     private static string BuildDiskTooltip(DiskDeviceSnapshot device)
     {
-        var parts = new List<string>(4);
+        var parts = new List<string>(5);
         if (!string.IsNullOrWhiteSpace(device.Model))
         {
             parts.Add(device.Model);
@@ -1107,6 +1110,11 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
         // 行の Busy% 列には見出しラベルを置く幅が無い（付けるとモデル名列を削ることになる）ため、
         // 何の百分率かはここで補う。
         parts.Add(string.Create(CultureInfo.InvariantCulture, $"Busy {ByteFormatter.Percent(device.BusyPercent)}"));
+
+        if (device.BusyAlertLevel != AlertLevel.None)
+        {
+            parts.Add("高 Busy が継続");
+        }
 
         return string.Join(" · ", parts);
     }

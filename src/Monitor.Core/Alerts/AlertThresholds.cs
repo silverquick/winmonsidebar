@@ -52,4 +52,18 @@ public static class AlertThresholds
     // 「注意域」は表に無かったため、ここでの判断として CPU の注意閾値と同じ値を暫定採用する
     // （マザーボード温度専用の閾値表が無い以上、既存の CPU 閾値を流用するのが最も保守的）。
     public const double MotherboardTempCautionC = CpuTempCautionC;
+
+    // ===== 観測警告: ディスク高 Busy 継続 =====
+    // 瞬間的な高 Busy (100%) は大きなコピーや正常な高負荷でも発生するため障害を断定するものではないが、
+    // 異常に長く高負荷が継続している観測事実を知らせる。
+    // 初期値: Caution=95%以上が2分継続、Critical=99%以上が10分継続、解除=85%未満が15秒継続。
+    // 85〜95% は発報前なら継続を中断し、発報後ならレベルを維持するヒステリシス帯としてちらつきを防ぐ。
+    public const double DiskBusyCautionPercent = 95.0;
+    public static readonly TimeSpan DiskBusyCautionDuration = TimeSpan.FromMinutes(2);
+
+    public const double DiskBusyCriticalPercent = 99.0;
+    public static readonly TimeSpan DiskBusyCriticalDuration = TimeSpan.FromMinutes(10);
+
+    public const double DiskBusyRecoveryPercent = 85.0;
+    public static readonly TimeSpan DiskBusyRecoveryDuration = TimeSpan.FromSeconds(15);
 }

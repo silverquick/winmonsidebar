@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using Monitor.Core.Abstractions;
+using Monitor.Core.Alerts;
 using Monitor.Core.Models;
 
 namespace Monitor.Core;
@@ -43,6 +44,7 @@ public sealed class MetricsHub : IAsyncDisposable
     private int _processSamplingEnabled = 1;
     private readonly IDetailSamplingProvider? _cpuDetails;
     private readonly object _snapshotLock = new();
+    private readonly DiskBusyAlertTracker _diskAlertTracker = new();
     private CpuSnapshot _lastCpu = CpuSnapshot.Empty;
     private MemorySnapshot _lastMemory = MemorySnapshot.Empty;
     private DiskSnapshot _lastDisk = DiskSnapshot.Empty;
@@ -136,7 +138,8 @@ public sealed class MetricsHub : IAsyncDisposable
 
             CpuSnapshot cpu = SampleSafe(_cpu, elapsed, CpuSnapshot.Empty);
             MemorySnapshot memory = SampleSafe(_memory, elapsed, MemorySnapshot.Empty);
-            DiskSnapshot disk = SampleSafe(_disk, elapsed, DiskSnapshot.Empty);
+            DiskSnapshot rawDisk = SampleSafe(_disk, elapsed, DiskSnapshot.Empty);
+            DiskSnapshot disk = _diskAlertTracker.Update(rawDisk, elapsed);
             NetworkSnapshot network = SampleSafe(_network, elapsed, NetworkSnapshot.Empty);
             GpuSnapshot gpu = SampleSafe(_gpu, elapsed, GpuSnapshot.Empty);
 

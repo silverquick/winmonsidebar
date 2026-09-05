@@ -1,3 +1,5 @@
+using Monitor.Core.Alerts;
+
 namespace Monitor.Core.Models;
 
 public sealed record LogicalVolumeSnapshot
@@ -19,6 +21,7 @@ public sealed record DiskDeviceSnapshot
     public double ReadBytesPerSec { get; init; }
     public double WriteBytesPerSec { get; init; }
     public double BusyPercent { get; init; }
+    public AlertLevel BusyAlertLevel { get; init; } = AlertLevel.None;
     public double? TemperatureC { get; init; }
 
     /// <summary>ドライブ自身が申告する警告温度（摂氏）。SSD は 70°C 前後、HDD は 55°C 前後など機種ごとに
