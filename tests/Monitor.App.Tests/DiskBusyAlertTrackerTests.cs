@@ -443,9 +443,9 @@ public sealed class DiskBusyAlertTrackerTests
     }
 
     [STATestMethod]
-    [DataRow(AlertLevel.None, false, (byte)0, (byte)0, (byte)0, 0.0, 0.0)]
-    [DataRow(AlertLevel.Caution, true, (byte)0xF0, (byte)0xC2, (byte)0x3C, 4.0, 0.60)]
-    [DataRow(AlertLevel.Critical, true, (byte)0xF0, (byte)0x4A, (byte)0x4A, 5.0, 0.80)]
+    [DataRow(AlertLevel.None, false, (byte)0, (byte)0, (byte)0, 0.0, 0.0, (byte)0x00)]
+    [DataRow(AlertLevel.Caution, true, (byte)0xF0, (byte)0xC2, (byte)0x3C, 8.0, 0.90, (byte)0x40)]
+    [DataRow(AlertLevel.Critical, true, (byte)0xF0, (byte)0x4A, (byte)0x4A, 10.0, 1.0, (byte)0x55)]
     public void XamlTheme_StorageDiskHeaderStyle_AppliesDropShadowGlow(
         AlertLevel alertLevel,
         bool hasEffect,
@@ -453,7 +453,8 @@ public sealed class DiskBusyAlertTrackerTests
         byte green,
         byte blue,
         double blurRadius,
-        double opacity)
+        double opacity,
+        byte backgroundAlpha)
     {
         var resources = (ResourceDictionary)Application.LoadComponent(
             new Uri("/Monitor.App;component/Themes/Dark.xaml", UriKind.Relative));
@@ -470,6 +471,7 @@ public sealed class DiskBusyAlertTrackerTests
         if (!hasEffect)
         {
             Assert.IsNull(border.Effect, "Normal level (None) must not have an Effect applied.");
+            Assert.AreEqual(Color.FromArgb(0x08, 0xFF, 0xFF, 0xFF), ((SolidColorBrush)border.Background).Color, "Normal level must keep the default faint background.");
         }
         else
         {
@@ -479,6 +481,10 @@ public sealed class DiskBusyAlertTrackerTests
             Assert.AreEqual(0.0, dropShadow.ShadowDepth, "ShadowDepth must be 0 for uniform glow.");
             Assert.AreEqual(blurRadius, dropShadow.BlurRadius, 0.01);
             Assert.AreEqual(opacity, dropShadow.Opacity, 0.01);
+            Assert.AreEqual(
+                Color.FromArgb(backgroundAlpha, red, green, blue),
+                ((SolidColorBrush)border.Background).Color,
+                "Caution/Critical must tint the row background with the alert color.");
         }
     }
 
