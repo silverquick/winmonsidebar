@@ -319,6 +319,45 @@ public sealed class DiskBusyAlertTrackerTests
     }
 
     [TestMethod]
+    public void Tracker_LargeGapWithHighBusyOnResume_DoesNotImmediatelyTriggerAlert()
+    {
+        var tracker = new DiskBusyAlertTracker(TimeSpan.FromSeconds(3));
+
+        // 通常運転中（99%を50秒蓄積、まだCaution閾値未満）
+        for (int i = 0; i < 50; i++)
+        {
+            tracker.Update(CreateDiskSnapshot((0, 99.0)), TimeSpan.FromSeconds(1));
+        }
+        Assert.AreEqual(AlertLevel.None, tracker.GetAlertLevel(0));
+
+        // サスペンド復帰: 数時間分の elapsed が一度に来て、かつ復帰直後のサンプルが Busy 99%
+        // (Windows Update やウイルススキャンが復帰直後に走るケースを想定)。
+        // 巨大な elapsed をそのまま継続時間へ加算すると、この1サンプルだけで
+        // Critical 閾値(10分)を満たしてしまう回帰を検出する。
+        var resumeSnap = tracker.Update(CreateDiskSnapshot((0, 99.0)), TimeSpan.FromHours(5));
+        Assert.AreEqual(
+            AlertLevel.None,
+            resumeSnap.Devices[0].BusyAlertLevel,
+            "サスペンド復帰直後の1サンプルだけで Critical へ誤って昇格してはならない");
+
+        // 復帰後は継続時間がゼロから積み上げ直しになるため、120秒までは None、599秒までは Caution
+        for (int i = 0; i < 119; i++)
+        {
+            var snap = tracker.Update(CreateDiskSnapshot((0, 99.0)), TimeSpan.FromSeconds(1));
+            Assert.AreEqual(AlertLevel.None, snap.Devices[0].BusyAlertLevel, $"Resume+{i + 1}s should still be None");
+        }
+        for (int i = 119; i < 599; i++)
+        {
+            var snap = tracker.Update(CreateDiskSnapshot((0, 99.0)), TimeSpan.FromSeconds(1));
+            Assert.AreEqual(AlertLevel.Caution, snap.Devices[0].BusyAlertLevel, $"Resume+{i + 1}s should be Caution, not Critical yet");
+        }
+
+        // 600秒目でようやく Critical
+        var criticalSnap = tracker.Update(CreateDiskSnapshot((0, 99.0)), TimeSpan.FromSeconds(1));
+        Assert.AreEqual(AlertLevel.Critical, criticalSnap.Devices[0].BusyAlertLevel);
+    }
+
+    [TestMethod]
     public void Tracker_MultipleDisks_IndependentState()
     {
         var tracker = new DiskBusyAlertTracker();

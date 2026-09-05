@@ -107,6 +107,10 @@ public sealed class DiskBusyAlertTracker
         if (isGap)
         {
             state.Reset();
+            // ギャップ発生時は今回のサンプル区間（数時間に及び得る）を継続時間へ算入しない。
+            // そのまま加算すると、復帰直後の1サンプルだけで継続時間の閾値を満たし、
+            // スリープ復帰直後の一時的な高Busyを誤ってCriticalと判定してしまう。
+            elapsed = TimeSpan.Zero;
         }
 
         // 継続時間の更新
