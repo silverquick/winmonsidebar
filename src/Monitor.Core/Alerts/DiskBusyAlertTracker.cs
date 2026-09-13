@@ -15,6 +15,8 @@ public sealed class DiskBusyAlertTracker
 
     private readonly TimeSpan _maxSampleGap;
     private readonly Dictionary<int, DiskBusyState> _states = new();
+    private readonly HashSet<int> _activeDriveNumbersBuffer = new();
+    private readonly List<int> _removedKeysBuffer = new();
 
     public DiskBusyAlertTracker(TimeSpan? maxSampleGap = null)
     {
@@ -41,22 +43,22 @@ public sealed class DiskBusyAlertTracker
         }
 
         // スナップショットから消失したディスクの状態を削除
-        var activeDriveNumbers = new HashSet<int>(snapshot.Devices.Count);
+        _activeDriveNumbersBuffer.Clear();
         foreach (DiskDeviceSnapshot device in snapshot.Devices)
         {
-            activeDriveNumbers.Add(device.PhysicalDriveNumber);
+            _activeDriveNumbersBuffer.Add(device.PhysicalDriveNumber);
         }
 
-        var removedKeys = new List<int>();
+        _removedKeysBuffer.Clear();
         foreach (int key in _states.Keys)
         {
-            if (!activeDriveNumbers.Contains(key))
+            if (!_activeDriveNumbersBuffer.Contains(key))
             {
-                removedKeys.Add(key);
+                _removedKeysBuffer.Add(key);
             }
         }
 
-        foreach (int key in removedKeys)
+        foreach (int key in _removedKeysBuffer)
         {
             _states.Remove(key);
         }

@@ -1,7 +1,6 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Globalization;
-using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Windows.Threading;
 using Monitor.App.Settings;
@@ -29,6 +28,14 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
     private IReadOnlyList<PageFileInfo>? _lastPageFiles;
     private ThermalSnapshot? _lastThermal;
     private IReadOnlyList<ProcessInfo>? _lastProcesses;
+
+    // ApplyStorage で毎秒使い回すバッファ。Clear() してから詰め直す（CpuProvider._coreBuffer と同じ方針）。
+    private readonly HashSet<int> _diskNumbersBuffer = new();
+    private readonly Dictionary<int, List<VolumeSnapshot>> _volumesByDiskBuffer = new();
+    private readonly List<VolumeSnapshot> _unresolvedVolumesBuffer = new();
+    private readonly List<VolumeSnapshot> _networkVolumesBuffer = new();
+    private readonly List<DiskDeviceSnapshot> _sortedDiskDevicesBuffer = new();
+    private readonly List<string> _desiredStorageKeysBuffer = new();
 
     public SidebarViewModel(MetricsHub hub, Dispatcher dispatcher, AppSettings settings)
     {
@@ -874,85 +881,134 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
         DiskReadSparkline = _hub.History.Snapshot(MetricSeries.DiskReadBytesPerSec);
         DiskWriteSparkline = _hub.History.Snapshot(MetricSeries.DiskWriteBytesPerSec);
 
-        var devicesByNumber = new Dictionary<int, DiskDeviceSnapshot>();
+        _diskNumbersBuffer.Clear();
         foreach (DiskDeviceSnapshot d in disk.Devices)
         {
-            devicesByNumber[d.PhysicalDriveNumber] = d;
+            _diskNumbersBuffer.Add(d.PhysicalDriveNumber);
         }
 
         // 物理ディスク番号 → 配下ボリューム（ドライブレター昇順）。解決できないローカルボリュームと
         // ネットワークドライブは別リストへ振り分け、グループ群の後ろにまとめて続ける。
-        var volumesByDisk = new Dictionary<int, List<VolumeSnapshot>>();
-        var unresolvedVolumes = new List<VolumeSnapshot>();
-        var networkVolumes = new List<VolumeSnapshot>();
+        // ディスク数は起動後ほぼ不変なので、キーごとの内側リストは Clear() して使い回す
+        // （消えたディスク番号のキー自体は残っても空のまま参照されないだけなので無害）。
+        foreach (List<VolumeSnapshot> list in _volumesByDiskBuffer.Values)
+        {
+            list.Clear();
+        }
+
+        _unresolvedVolumesBuffer.Clear();
+        _networkVolumesBuffer.Clear();
 
         foreach (VolumeSnapshot v in volumes)
         {
             if (v.Kind == VolumeKind.Network)
             {
-                networkVolumes.Add(v);
+                _networkVolumesBuffer.Add(v);
             }
-            else if (v.PhysicalDriveNumber is int pd && devicesByNumber.ContainsKey(pd))
+            else if (v.PhysicalDriveNumber is int pd && _diskNumbersBuffer.Contains(pd))
             {
-                if (!volumesByDisk.TryGetValue(pd, out List<VolumeSnapshot>? list))
+                if (!_volumesByDiskBuffer.TryGetValue(pd, out List<VolumeSnapshot>? list))
                 {
                     list = new List<VolumeSnapshot>();
-                    volumesByDisk[pd] = list;
+                    _volumesByDiskBuffer[pd] = list;
                 }
 
                 list.Add(v);
             }
             else
             {
-                unresolvedVolumes.Add(v);
+                _unresolvedVolumesBuffer.Add(v);
             }
         }
 
-        foreach (List<VolumeSnapshot> list in volumesByDisk.Values)
+        foreach (List<VolumeSnapshot> list in _volumesByDiskBuffer.Values)
         {
             list.Sort((a, b) => string.CompareOrdinal(a.DriveLetter, b.DriveLetter));
         }
 
-        unresolvedVolumes.Sort((a, b) => string.CompareOrdinal(a.DriveLetter, b.DriveLetter));
-        networkVolumes.Sort((a, b) => string.CompareOrdinal(a.DriveLetter, b.DriveLetter));
+        _unresolvedVolumesBuffer.Sort((a, b) => string.CompareOrdinal(a.DriveLetter, b.DriveLetter));
+        _networkVolumesBuffer.Sort((a, b) => string.CompareOrdinal(a.DriveLetter, b.DriveLetter));
 
-        DiskDeviceSnapshot[] sortedDevices = disk.Devices.OrderBy(d => d.PhysicalDriveNumber).ToArray();
+        _sortedDiskDevicesBuffer.Clear();
+        _sortedDiskDevicesBuffer.AddRange(disk.Devices);
+        _sortedDiskDevicesBuffer.Sort((a, b) => a.PhysicalDriveNumber.CompareTo(b.PhysicalDriveNumber));
 
-        var desiredKeys = new List<string>(volumes.Count + disk.Devices.Count);
-        var applyActions = new Dictionary<string, Action<StorageRowViewModel>>(volumes.Count + disk.Devices.Count);
+        // 最終的な行の並び順（ディスク見出し→配下ボリューム→未解決ボリューム→ネットワーク）でキーだけを
+        // 先に列挙する。後続の削除判定・行の並べ替えの両方で使うので、キー文字列の組み立てもここで1回だけ行う。
+        _desiredStorageKeysBuffer.Clear();
 
-        foreach (DiskDeviceSnapshot d in sortedDevices)
+        foreach (DiskDeviceSnapshot d in _sortedDiskDevicesBuffer)
         {
-            string diskKey = "#" + d.PhysicalDriveNumber.ToString(CultureInfo.InvariantCulture);
-            desiredKeys.Add(diskKey);
-            applyActions[diskKey] = BuildDiskRowAction(d, thermal);
+            _desiredStorageKeysBuffer.Add(BuildDiskRowKey(d.PhysicalDriveNumber));
 
-            if (volumesByDisk.TryGetValue(d.PhysicalDriveNumber, out List<VolumeSnapshot>? childVolumes))
+            if (_volumesByDiskBuffer.TryGetValue(d.PhysicalDriveNumber, out List<VolumeSnapshot>? childVolumes))
             {
                 foreach (VolumeSnapshot v in childVolumes)
                 {
-                    desiredKeys.Add(v.DriveLetter);
-                    applyActions[v.DriveLetter] = BuildVolumeRowAction(v, StorageRowKind.Volume);
+                    _desiredStorageKeysBuffer.Add(v.DriveLetter);
                 }
             }
         }
 
-        foreach (VolumeSnapshot v in unresolvedVolumes)
+        foreach (VolumeSnapshot v in _unresolvedVolumesBuffer)
         {
-            desiredKeys.Add(v.DriveLetter);
-            applyActions[v.DriveLetter] = BuildVolumeRowAction(v, StorageRowKind.Volume);
+            _desiredStorageKeysBuffer.Add(v.DriveLetter);
         }
 
-        foreach (VolumeSnapshot v in networkVolumes)
+        foreach (VolumeSnapshot v in _networkVolumesBuffer)
         {
-            desiredKeys.Add(v.DriveLetter);
-            applyActions[v.DriveLetter] = BuildVolumeRowAction(v, StorageRowKind.Network);
+            _desiredStorageKeysBuffer.Add(v.DriveLetter);
         }
 
-        UpdateStorageRows(desiredKeys, applyActions);
+        // 消えた行（ディスクの脱着・ボリュームのマウント解除）を先に削除してから、残りは既存行をキーで
+        // 直接照合して更新する（UpdateProcesses と同じ方針）。中間の Dictionary<string, Action<>> は介さない。
+        for (int i = StorageRows.Count - 1; i >= 0; i--)
+        {
+            if (!_desiredStorageKeysBuffer.Contains(StorageRows[i].Key))
+            {
+                StorageRows.RemoveAt(i);
+            }
+        }
+
+        int rowIndex = 0;
+
+        foreach (DiskDeviceSnapshot d in _sortedDiskDevicesBuffer)
+        {
+            StorageRowViewModel diskRow = FindOrCreateStorageRow(_desiredStorageKeysBuffer[rowIndex], out int existingDiskIndex);
+            ApplyDiskRow(diskRow, d, thermal);
+            PlaceStorageRow(diskRow, existingDiskIndex, rowIndex);
+            rowIndex++;
+
+            if (_volumesByDiskBuffer.TryGetValue(d.PhysicalDriveNumber, out List<VolumeSnapshot>? childVolumes))
+            {
+                foreach (VolumeSnapshot v in childVolumes)
+                {
+                    StorageRowViewModel volumeRow = FindOrCreateStorageRow(_desiredStorageKeysBuffer[rowIndex], out int existingVolumeIndex);
+                    ApplyVolumeRow(volumeRow, v, StorageRowKind.Volume);
+                    PlaceStorageRow(volumeRow, existingVolumeIndex, rowIndex);
+                    rowIndex++;
+                }
+            }
+        }
+
+        foreach (VolumeSnapshot v in _unresolvedVolumesBuffer)
+        {
+            StorageRowViewModel volumeRow = FindOrCreateStorageRow(_desiredStorageKeysBuffer[rowIndex], out int existingVolumeIndex);
+            ApplyVolumeRow(volumeRow, v, StorageRowKind.Volume);
+            PlaceStorageRow(volumeRow, existingVolumeIndex, rowIndex);
+            rowIndex++;
+        }
+
+        foreach (VolumeSnapshot v in _networkVolumesBuffer)
+        {
+            StorageRowViewModel networkRow = FindOrCreateStorageRow(_desiredStorageKeysBuffer[rowIndex], out int existingNetworkIndex);
+            ApplyVolumeRow(networkRow, v, StorageRowKind.Network);
+            PlaceStorageRow(networkRow, existingNetworkIndex, rowIndex);
+            rowIndex++;
+        }
 
         // セクション見出しの集約警告レベル: 全行（ディスク見出し・ボリューム・ネットワーク）の最大。
-        // 各行の AlertLevel は UpdateStorageRows 実行後の StorageRows に反映済みなので、ここでまとめて読む。
+        // 各行の AlertLevel は上の更新ループで StorageRows に反映済みなので、ここでまとめて読む。
         AlertLevel storageAlertLevel = AlertLevel.None;
         foreach (StorageRowViewModel row in StorageRows)
         {
@@ -996,8 +1052,12 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
         return level;
     }
 
-    /// <summary>物理ディスク見出し行1件分の更新アクションを組み立てる。</summary>
-    private static Action<StorageRowViewModel> BuildDiskRowAction(DiskDeviceSnapshot d, ThermalSnapshot thermal)
+    /// <summary>物理ディスク見出し行のキー（例 "#3"）を組み立てる。</summary>
+    private static string BuildDiskRowKey(int physicalDriveNumber) =>
+        "#" + physicalDriveNumber.ToString(CultureInfo.InvariantCulture);
+
+    /// <summary>物理ディスク見出し行1件分の値を計算し、既存の行インスタンスへ直接反映する。</summary>
+    private static void ApplyDiskRow(StorageRowViewModel row, DiskDeviceSnapshot d, ThermalSnapshot thermal)
     {
         string modelText = string.IsNullOrWhiteSpace(d.Model) ? $"Disk {d.PhysicalDriveNumber}" : d.Model;
         string busTypeText = string.IsNullOrEmpty(d.BusType) ? "" : d.BusType + (d.IsSsd ? " SSD" : " HDD");
@@ -1012,17 +1072,17 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
         AlertLevel busyAlertLevel = d.BusyAlertLevel;
         AlertLevel alertLevel = MaxLevel(temperatureAlertLevel, busyAlertLevel);
 
-        return row => row.UpdateAsDisk(
+        row.UpdateAsDisk(
             modelText, busTypeText, readText, writeText, busyPercentText, temperatureText, writeBytesPerSec, tooltipText, alertLevel, busyAlertLevel, temperatureAlertLevel);
     }
 
-    /// <summary>ボリューム行/ネットワーク行1件分の更新アクションを組み立てる。列構成は共通なので
+    /// <summary>ボリューム行/ネットワーク行1件分の値を計算し、既存の行インスタンスへ直接反映する。列構成は共通なので
     /// <paramref name="kind"/>（Volume / Network）だけで振る舞いを切り替える。
     /// 警告判定もここで振り分ける: ローカルのボリューム行は空き容量（<see cref="AlertEvaluator.DriveCapacity"/>）、
     /// ネットワーク行は切断（<see cref="AlertEvaluator.NetworkDriveDisconnected"/>）。ローカルドライブは
     /// 空のカードリーダー等で IsReady=false になり得るため NetworkDriveDisconnected の対象にはしない
     /// （<see cref="AlertEvaluator.NetworkDriveDisconnected"/> のドキュメント参照）。</summary>
-    private static Action<StorageRowViewModel> BuildVolumeRowAction(VolumeSnapshot v, StorageRowKind kind)
+    private static void ApplyVolumeRow(StorageRowViewModel row, VolumeSnapshot v, StorageRowKind kind)
     {
         string driveLetterText = v.DriveLetter;
         string labelText = kind == StorageRowKind.Network
@@ -1038,54 +1098,45 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
             ? AlertEvaluator.NetworkDriveDisconnected(v.IsReady)
             : (hasCapacity ? AlertEvaluator.DriveCapacity(usedPercent, v.FreeBytes) : AlertLevel.None);
 
-        return row => row.UpdateAsVolume(
+        row.UpdateAsVolume(
             kind, driveLetterText, labelText, isReady, hasCapacity, usedPercent, usagePercentText, capacityText, tooltipText, alertLevel);
     }
 
-    /// <summary>
-    /// 全ストレージ行（物理ディスク見出し行 + ボリューム/ネットワーク行）を <see cref="StorageRowViewModel.Key"/> で
-    /// 照合しながら差分更新する。毎回 Clear→Add するとちらつくため、足りない/余る分だけ追加削除する
-    /// （<see cref="UpdateProcesses"/> と同じ方針）。<paramref name="desiredKeys"/> の順序を維持する。
-    /// </summary>
-    private void UpdateStorageRows(List<string> desiredKeys, Dictionary<string, Action<StorageRowViewModel>> applyActions)
+    /// <summary><paramref name="key"/> に一致する行を <see cref="StorageRows"/> から探して返す（無ければ
+    /// 生成するが、まだコレクションへは挿入しない）。<paramref name="existingIndex"/> には見つかった位置、
+    /// 新規生成した場合は -1 を返す。<see cref="UpdateProcesses"/> と同様、行の更新はコレクションへ挿入する
+    /// 前に済ませたいので、探索/生成と配置（<see cref="PlaceStorageRow"/>）を分けている。</summary>
+    private StorageRowViewModel FindOrCreateStorageRow(string key, out int existingIndex)
     {
-        for (int i = StorageRows.Count - 1; i >= 0; i--)
+        for (int j = 0; j < StorageRows.Count; j++)
         {
-            if (!desiredKeys.Contains(StorageRows[i].Key))
+            if (StorageRows[j].Key == key)
             {
-                StorageRows.RemoveAt(i);
+                existingIndex = j;
+                return StorageRows[j];
             }
         }
 
-        for (int i = 0; i < desiredKeys.Count; i++)
+        existingIndex = -1;
+        return new StorageRowViewModel(key);
+    }
+
+    /// <summary><paramref name="row"/> を <see cref="StorageRows"/> 内の <paramref name="desiredIndex"/> の
+    /// 位置へ配置する。<paramref name="existingIndex"/> が -1（新規行）なら挿入し、既存行なら必要な場合のみ
+    /// 移動する。呼び出し側は先に <c>ApplyDiskRow</c>/<c>ApplyVolumeRow</c> で値を反映してから呼ぶこと
+    /// （<see cref="UpdateProcesses"/> と同じ順序）。</summary>
+    private void PlaceStorageRow(StorageRowViewModel row, int existingIndex, int desiredIndex)
+    {
+        if (existingIndex < 0)
         {
-            string key = desiredKeys[i];
+            int insertIndex = Math.Min(desiredIndex, StorageRows.Count);
+            StorageRows.Insert(insertIndex, row);
+            return;
+        }
 
-            int existingIndex = -1;
-            for (int j = 0; j < StorageRows.Count; j++)
-            {
-                if (StorageRows[j].Key == key)
-                {
-                    existingIndex = j;
-                    break;
-                }
-            }
-
-            if (existingIndex < 0)
-            {
-                var row = new StorageRowViewModel(key);
-                applyActions[key](row);
-                int insertIndex = Math.Min(i, StorageRows.Count);
-                StorageRows.Insert(insertIndex, row);
-            }
-            else
-            {
-                applyActions[key](StorageRows[existingIndex]);
-                if (existingIndex != i)
-                {
-                    StorageRows.Move(existingIndex, i);
-                }
-            }
+        if (existingIndex != desiredIndex)
+        {
+            StorageRows.Move(existingIndex, desiredIndex);
         }
     }
 

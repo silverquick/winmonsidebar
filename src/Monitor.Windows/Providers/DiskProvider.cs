@@ -47,6 +47,10 @@ public sealed class DiskProvider : IMetricProvider<DiskSnapshot>
     private readonly Dictionary<int, (double? Warning, double? Critical)> _temperatureThresholds = new();
     private readonly Dictionary<int, DiskTemperatureReading> _temperatureReadings = new();
 
+    // ReadPdhRates() で毎秒使い回すバッファ。呼び出しの都度 Clear() してから詰め直す。
+    private readonly Dictionary<int, PdhDiskRates> _pdhRatesByDriveBuffer = new();
+    private readonly Dictionary<int, DiskRateAccumulator> _rateAccumulatorsBuffer = new();
+
     public string Name => "Disk";
 
     public bool IsAvailable { get; private set; }
@@ -337,7 +341,8 @@ public sealed class DiskProvider : IMetricProvider<DiskSnapshot>
             return _readRates();
         }
 
-        var byDrive = new Dictionary<int, PdhDiskRates>();
+        Dictionary<int, PdhDiskRates> byDrive = _pdhRatesByDriveBuffer;
+        byDrive.Clear();
 
         if (_query is null || _readCounter is null || _writeCounter is null || _busyCounter is null)
         {
@@ -346,7 +351,8 @@ public sealed class DiskProvider : IMetricProvider<DiskSnapshot>
 
         _query.Collect();
 
-        var accumulators = new Dictionary<int, DiskRateAccumulator>();
+        Dictionary<int, DiskRateAccumulator> accumulators = _rateAccumulatorsBuffer;
+        accumulators.Clear();
         double totalRead = 0.0;
         double totalWrite = 0.0;
         double totalBusy = 0.0;

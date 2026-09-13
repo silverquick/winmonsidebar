@@ -22,6 +22,17 @@ public sealed class GpuProvider : IMetricProvider<GpuSnapshot>
     private IReadOnlyList<DxgiAdapterInfo> _adapters = Array.Empty<DxgiAdapterInfo>();
     private bool _disposed;
 
+    // Sample() で毎秒使い回すバッファ。アダプタ数は起動後変化しないのが通常のため、
+    // AdapterAccumulator インスタンス自体も LUID をキーに使い回し、サンプルの先頭で Reset() する。
+    private readonly Dictionary<long, AdapterAccumulator> _perAdapterBuffer = new();
+    private readonly HashSet<long> _touchedAdapterLuidsBuffer = new();
+    private readonly List<long> _staleAdapterLuidsBuffer = new();
+
+    // MergeVendorSensors() で毎秒使い回すバッファ。サイズはアダプタ数/ベンダーセンサー数に依存し
+    // 通常は起動後不変だが、変化した場合は安全側に倒して作り直す。
+    private bool[] _usedVendorBuffer = Array.Empty<bool>();
+    private GpuVendorReading?[] _matchedVendorBuffer = Array.Empty<GpuVendorReading?>();
+
     /// <summary>
     /// <paramref name="vendorSensorsFactory"/> はベンダー固有 API（NVAPI 等）由来の追加センサー（温度/ファン/
     /// 電力/クロック）を遅延生成するファクトリ。層を逆転させないため、この層は具体的なベンダー実装を知らない。
@@ -106,7 +117,15 @@ public sealed class GpuProvider : IMetricProvider<GpuSnapshot>
         {
             _query.Collect();
 
-            var perAdapter = new Dictionary<long, AdapterAccumulator>();
+            // 前回サンプルの値を持ち越さないよう、既知アダプタの集計値をこのサンプルの先頭で
+            // 全てゼロへ戻す（Dictionary/AdapterAccumulator インスタンス自体は使い回す）。
+            foreach (AdapterAccumulator acc in _perAdapterBuffer.Values)
+            {
+                acc.Reset();
+            }
+
+            Dictionary<long, AdapterAccumulator> perAdapter = _perAdapterBuffer;
+            _touchedAdapterLuidsBuffer.Clear();
 
             foreach (PdhItemSpan item in _engineCounter.Enumerate())
             {
@@ -115,7 +134,7 @@ public sealed class GpuProvider : IMetricProvider<GpuSnapshot>
                     continue;
                 }
 
-                GetOrAddAccumulator(perAdapter, luid).AddEngine(engineType, item.Value);
+                GetOrAddAccumulator(luid).AddEngine(engineType, item.Value);
             }
 
             if (_dedicatedMemoryCounter is not null)
@@ -127,7 +146,26 @@ public sealed class GpuProvider : IMetricProvider<GpuSnapshot>
                         continue;
                     }
 
-                    GetOrAddAccumulator(perAdapter, luid).DedicatedUsedBytes += ClampToBytes(item.Value);
+                    GetOrAddAccumulator(luid).DedicatedUsedBytes += ClampToBytes(item.Value);
+                }
+            }
+
+            // このサンプルで見えなかった（脱着等で消えた）アダプタの残骸を除去する。
+            // こうしないと、次回以降そのアダプタが再度見えるまでゼロ値のまま出力に残り続けてしまう。
+            if (_touchedAdapterLuidsBuffer.Count != perAdapter.Count)
+            {
+                _staleAdapterLuidsBuffer.Clear();
+                foreach (long luid in perAdapter.Keys)
+                {
+                    if (!_touchedAdapterLuidsBuffer.Contains(luid))
+                    {
+                        _staleAdapterLuidsBuffer.Add(luid);
+                    }
+                }
+
+                foreach (long luid in _staleAdapterLuidsBuffer)
+                {
+                    perAdapter.Remove(luid);
                 }
             }
 
@@ -225,8 +263,28 @@ public sealed class GpuProvider : IMetricProvider<GpuSnapshot>
             return;
         }
 
-        var usedVendor = new bool[vendorReadings.Count];
-        var matched = new GpuVendorReading?[adapters.Count];
+        // サイズはアダプタ数/ベンダーセンサー数に依存し通常は起動後不変なので、既存バッファを
+        // Clear() して使い回す。サイズが変わった場合のみ安全側に倒して作り直す。
+        if (_usedVendorBuffer.Length != vendorReadings.Count)
+        {
+            _usedVendorBuffer = new bool[vendorReadings.Count];
+        }
+        else
+        {
+            Array.Clear(_usedVendorBuffer);
+        }
+
+        if (_matchedVendorBuffer.Length != adapters.Count)
+        {
+            _matchedVendorBuffer = new GpuVendorReading?[adapters.Count];
+        }
+        else
+        {
+            Array.Clear(_matchedVendorBuffer);
+        }
+
+        bool[] usedVendor = _usedVendorBuffer;
+        GpuVendorReading?[] matched = _matchedVendorBuffer;
 
         // Pass 1: LUID 一致（最も信頼できる）。
         for (int i = 0; i < adapters.Count; i++)
@@ -349,12 +407,14 @@ public sealed class GpuProvider : IMetricProvider<GpuSnapshot>
         }
     }
 
-    private static AdapterAccumulator GetOrAddAccumulator(Dictionary<long, AdapterAccumulator> map, long luid)
+    private AdapterAccumulator GetOrAddAccumulator(long luid)
     {
-        if (!map.TryGetValue(luid, out AdapterAccumulator? acc))
+        _touchedAdapterLuidsBuffer.Add(luid);
+
+        if (!_perAdapterBuffer.TryGetValue(luid, out AdapterAccumulator? acc))
         {
             acc = new AdapterAccumulator();
-            map[luid] = acc;
+            _perAdapterBuffer[luid] = acc;
         }
 
         return acc;
@@ -511,6 +571,20 @@ public sealed class GpuProvider : IMetricProvider<GpuSnapshot>
                 string key = engineType.ToString();
                 _otherEngines[key] = _otherEngines.TryGetValue(key, out double existing) ? existing + value : value;
             }
+        }
+
+        /// <summary>次のサンプルで使い回す前に集計値を全てゼロへ戻す。<c>_otherEngines</c> は
+        /// 辞書自体を再利用するため Clear() のみ行い、null 化はしない。</summary>
+        public void Reset()
+        {
+            Engine3D = 0.0;
+            EngineCopy = 0.0;
+            VideoDecode = 0.0;
+            VideoEncode = 0.0;
+            VideoProcessing = 0.0;
+            EngineCompute = 0.0;
+            DedicatedUsedBytes = 0;
+            _otherEngines?.Clear();
         }
 
         public double MaxVideoTotal() => Math.Max(VideoDecode, Math.Max(VideoEncode, VideoProcessing));
