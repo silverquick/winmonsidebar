@@ -27,6 +27,7 @@ public sealed class GpuProvider : IMetricProvider<GpuSnapshot>
     private readonly Dictionary<long, AdapterAccumulator> _perAdapterBuffer = new();
     private readonly HashSet<long> _touchedAdapterLuidsBuffer = new();
     private readonly List<long> _staleAdapterLuidsBuffer = new();
+    private readonly List<string> _fallbackAdapterNames = new();
 
     // MergeVendorSensors() で毎秒使い回すバッファ。サイズはアダプタ数/ベンダーセンサー数に依存し
     // 通常は起動後不変だが、変化した場合は安全側に倒して作り直す。
@@ -185,7 +186,7 @@ public sealed class GpuProvider : IMetricProvider<GpuSnapshot>
                 long luid = kvp.Key;
                 AdapterAccumulator acc = kvp.Value;
 
-                string name = $"GPU {fallbackIndex}";
+                string? name = null;
                 ulong dedicatedTotal = 0;
 
                 foreach (DxgiAdapterInfo info in _adapters)
@@ -201,6 +202,8 @@ public sealed class GpuProvider : IMetricProvider<GpuSnapshot>
                         break;
                     }
                 }
+
+                name ??= GetFallbackAdapterName(fallbackIndex);
 
                 double usage = Math.Clamp(acc.MaxCategoryTotal(), 0.0, 100.0);
                 totalUsage = Math.Max(totalUsage, usage);
@@ -233,6 +236,16 @@ public sealed class GpuProvider : IMetricProvider<GpuSnapshot>
         {
             return GpuSnapshot.Empty;
         }
+    }
+
+    private string GetFallbackAdapterName(int index)
+    {
+        while (_fallbackAdapterNames.Count <= index)
+        {
+            _fallbackAdapterNames.Add($"GPU {_fallbackAdapterNames.Count}");
+        }
+
+        return _fallbackAdapterNames[index];
     }
 
     /// <summary>
@@ -568,13 +581,23 @@ public sealed class GpuProvider : IMetricProvider<GpuSnapshot>
             else
             {
                 _otherEngines ??= new Dictionary<string, double>();
-                string key = engineType.ToString();
+                string? key = null;
+                foreach (string cachedKey in _otherEngines.Keys)
+                {
+                    if (engineType.SequenceEqual(cachedKey))
+                    {
+                        key = cachedKey;
+                        break;
+                    }
+                }
+
+                key ??= engineType.ToString();
                 _otherEngines[key] = _otherEngines.TryGetValue(key, out double existing) ? existing + value : value;
             }
         }
 
         /// <summary>次のサンプルで使い回す前に集計値を全てゼロへ戻す。<c>_otherEngines</c> は
-        /// 辞書自体を再利用するため Clear() のみ行い、null 化はしない。</summary>
+        /// 辞書と文字列キーを再利用するため、エントリは残したまま値だけをゼロへ戻す。</summary>
         public void Reset()
         {
             Engine3D = 0.0;
@@ -584,7 +607,13 @@ public sealed class GpuProvider : IMetricProvider<GpuSnapshot>
             VideoProcessing = 0.0;
             EngineCompute = 0.0;
             DedicatedUsedBytes = 0;
-            _otherEngines?.Clear();
+            if (_otherEngines is not null)
+            {
+                foreach (string key in _otherEngines.Keys)
+                {
+                    _otherEngines[key] = 0.0;
+                }
+            }
         }
 
         public double MaxVideoTotal() => Math.Max(VideoDecode, Math.Max(VideoEncode, VideoProcessing));

@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Globalization;
@@ -17,6 +18,9 @@ namespace Monitor.App.ViewModels;
 /// </summary>
 public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
 {
+    private static readonly ConcurrentDictionary<string, PropertyChangedEventArgs> PropertyChangedEventArgsCache = new(StringComparer.Ordinal);
+    private static readonly string[] ShortRateUnits = ["", "K", "M", "G", "T"];
+
     private readonly MetricsHub _hub;
     private readonly Dispatcher _dispatcher;
     private readonly DispatcherTimer _clockTimer;
@@ -239,7 +243,7 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
             if (value && _hub.Latest is MetricsSnapshot latest)
             {
                 int primaryIndex = FindPrimaryNicIndex(latest.Network.Interfaces);
-                NetworkAllRows = BuildNetworkAllRows(latest.Network.Interfaces, primaryIndex);
+                UpdateNetworkAllRows(latest.Network.Interfaces, primaryIndex);
             }
         }
     }
@@ -525,8 +529,8 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
     public float[] NetworkUpSparkline { get => _networkUpSparkline; private set => SetProperty(ref _networkUpSparkline, value); }
 
     /// <summary>主表示 NIC（受信+送信が最大）を除いた残りの NIC 一覧。仮想 NIC が多い環境向けの折りたたみ表示用。</summary>
-    private IReadOnlyList<NetworkInterfaceRowViewModel> _networkAllRows = Array.Empty<NetworkInterfaceRowViewModel>();
-    public IReadOnlyList<NetworkInterfaceRowViewModel> NetworkAllRows { get => _networkAllRows; private set => SetProperty(ref _networkAllRows, value); }
+    private readonly ObservableCollection<NetworkInterfaceRowViewModel> _networkAllRows = new();
+    public IReadOnlyList<NetworkInterfaceRowViewModel> NetworkAllRows => _networkAllRows;
 
     // ----- 温度・ファン -----
     private bool _isThermalElevated;
@@ -1205,9 +1209,8 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
             return "·";
         }
 
-        string[] units = ["", "K", "M", "G", "T"];
         int unitIndex = 0;
-        while (v >= 1024.0 && unitIndex < units.Length - 1)
+        while (v >= 1024.0 && unitIndex < ShortRateUnits.Length - 1)
         {
             v /= 1024.0;
             unitIndex++;
@@ -1217,7 +1220,7 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
             ? Math.Round(v).ToString(CultureInfo.InvariantCulture)
             : (v < 10.0 ? v.ToString("F1", CultureInfo.InvariantCulture) : Math.Round(v).ToString(CultureInfo.InvariantCulture));
 
-        return numberText + units[unitIndex];
+        return numberText + ShortRateUnits[unitIndex];
     }
 
     private void ApplyNetwork(NetworkSnapshot network)
@@ -1245,7 +1248,7 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
 
         if (IsNetworkAllExpanded)
         {
-            NetworkAllRows = BuildNetworkAllRows(network.Interfaces, primaryIndex);
+            UpdateNetworkAllRows(network.Interfaces, primaryIndex);
         }
     }
 
@@ -1267,14 +1270,28 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
         return primaryIndex;
     }
 
-    private static IReadOnlyList<NetworkInterfaceRowViewModel> BuildNetworkAllRows(IReadOnlyList<NetworkInterfaceSnapshot> interfaces, int primaryIndex)
+    private void UpdateNetworkAllRows(IReadOnlyList<NetworkInterfaceSnapshot> interfaces, int primaryIndex)
     {
-        if (interfaces.Count <= 1)
+        // 副 NIC から外れた行（削除された NIC または主表示へ移った NIC）だけを削除する。
+        for (int i = _networkAllRows.Count - 1; i >= 0; i--)
         {
-            return Array.Empty<NetworkInterfaceRowViewModel>();
+            bool stillPresent = false;
+            for (int j = 0; j < interfaces.Count; j++)
+            {
+                if (j != primaryIndex && _networkAllRows[i].Matches(interfaces[j]))
+                {
+                    stillPresent = true;
+                    break;
+                }
+            }
+
+            if (!stillPresent)
+            {
+                _networkAllRows.RemoveAt(i);
+            }
         }
 
-        var rows = new List<NetworkInterfaceRowViewModel>(interfaces.Count - 1);
+        int desiredIndex = 0;
         for (int i = 0; i < interfaces.Count; i++)
         {
             if (i == primaryIndex)
@@ -1282,10 +1299,33 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
                 continue;
             }
 
-            rows.Add(new NetworkInterfaceRowViewModel(interfaces[i]));
-        }
+            NetworkInterfaceSnapshot nic = interfaces[i];
+            int existingIndex = -1;
+            for (int j = 0; j < _networkAllRows.Count; j++)
+            {
+                if (_networkAllRows[j].Matches(nic))
+                {
+                    existingIndex = j;
+                    break;
+                }
+            }
 
-        return rows;
+            if (existingIndex < 0)
+            {
+                var row = new NetworkInterfaceRowViewModel(nic);
+                _networkAllRows.Insert(Math.Min(desiredIndex, _networkAllRows.Count), row);
+            }
+            else
+            {
+                _networkAllRows[existingIndex].Update(nic);
+                if (existingIndex != desiredIndex)
+                {
+                    _networkAllRows.Move(existingIndex, desiredIndex);
+                }
+            }
+
+            desiredIndex++;
+        }
     }
 
     private void ApplyThermal(ThermalSnapshot thermal)
@@ -1515,7 +1555,7 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
 
         field = value;
         _settings.ExpandedSections[key] = value;
-        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
+        PropertyChanged?.Invoke(this, GetPropertyChangedEventArgs(propertyName));
         SettingsStore.Save(_settings);
     }
 
@@ -1538,6 +1578,9 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
         }
 
         field = value;
-        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
+        PropertyChanged?.Invoke(this, GetPropertyChangedEventArgs(propertyName));
     }
+
+    private static PropertyChangedEventArgs GetPropertyChangedEventArgs(string? propertyName) =>
+        PropertyChangedEventArgsCache.GetOrAdd(propertyName ?? string.Empty, static name => new PropertyChangedEventArgs(name));
 }

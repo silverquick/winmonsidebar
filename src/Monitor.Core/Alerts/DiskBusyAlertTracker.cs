@@ -63,15 +63,33 @@ public sealed class DiskBusyAlertTracker
             _states.Remove(key);
         }
 
-        var updatedDevices = new DiskDeviceSnapshot[snapshot.Devices.Count];
+        DiskDeviceSnapshot[]? updatedDevices = null;
         for (int i = 0; i < snapshot.Devices.Count; i++)
         {
             DiskDeviceSnapshot device = snapshot.Devices[i];
             AlertLevel level = UpdateDevice(device, elapsed, isGap);
-            updatedDevices[i] = device with { BusyAlertLevel = level };
+            if (level != device.BusyAlertLevel)
+            {
+                if (updatedDevices is null)
+                {
+                    updatedDevices = new DiskDeviceSnapshot[snapshot.Devices.Count];
+                    for (int j = 0; j < i; j++)
+                    {
+                        updatedDevices[j] = snapshot.Devices[j];
+                    }
+                }
+
+                updatedDevices[i] = device with { BusyAlertLevel = level };
+            }
+            else if (updatedDevices is not null)
+            {
+                updatedDevices[i] = device;
+            }
         }
 
-        return snapshot with { Devices = updatedDevices };
+        return updatedDevices is null
+            ? snapshot
+            : snapshot with { Devices = updatedDevices };
     }
 
     /// <summary>特定の物理ディスクの現在の警告レベルを取得する（テスト・確認用）。</summary>

@@ -71,6 +71,36 @@ public unsafe struct MIB_IF_ROW2
         }
     }
 
+    /// <summary>Compares the native alias buffer with an already materialized string without allocating.</summary>
+    public readonly bool AliasEquals(string value)
+    {
+        fixed (char* p = Alias)
+        {
+            return FixedStringEquals(p, 257, value);
+        }
+    }
+
+    /// <summary>Compares the native description buffer with an already materialized string without allocating.</summary>
+    public readonly bool DescriptionEquals(string value)
+    {
+        fixed (char* p = Description)
+        {
+            return FixedStringEquals(p, 257, value);
+        }
+    }
+
+    private static bool FixedStringEquals(char* buffer, int capacity, string value)
+    {
+        ReadOnlySpan<char> span = new(buffer, capacity);
+        int terminator = span.IndexOf('\0');
+        if (terminator >= 0)
+        {
+            span = span[..terminator];
+        }
+
+        return span.SequenceEqual(value);
+    }
+
     /// <summary>InterfaceAndOperStatusFlags の bit1 (0x02)。立っていれば WFP 等のフィルタ用疑似 IF。</summary>
     public readonly bool IsFilterInterface => (InterfaceAndOperStatusFlags & 0x02) != 0;
 }
@@ -92,13 +122,24 @@ public static partial class IpHlpApi
     /// Never throws; returns an empty list on any failure.</summary>
     public static unsafe IReadOnlyList<MIB_IF_ROW2> ReadInterfaceTable()
     {
+        var result = new List<MIB_IF_ROW2>();
+        return ReadInterfaceTable(result) ? result : Array.Empty<MIB_IF_ROW2>();
+    }
+
+    /// <summary>Enumerates all network interfaces into a caller-owned reusable buffer. The destination is
+    /// cleared first and remains empty on failure. Returns whether GetIfTable2 completed successfully.</summary>
+    internal static unsafe bool ReadInterfaceTable(List<MIB_IF_ROW2> destination)
+    {
+        ArgumentNullException.ThrowIfNull(destination);
+        destination.Clear();
+
         IntPtr tablePtr = IntPtr.Zero;
         try
         {
             uint status = GetIfTable2(out tablePtr);
             if (status != 0 || tablePtr == IntPtr.Zero)
             {
-                return Array.Empty<MIB_IF_ROW2>();
+                return false;
             }
 
             uint numEntries = unchecked((uint)Marshal.ReadInt32(tablePtr));
@@ -111,7 +152,7 @@ public static partial class IpHlpApi
             int rowSize = sizeof(MIB_IF_ROW2);
             IntPtr firstRow = IntPtr.Add(tablePtr, 8);
 
-            var result = new List<MIB_IF_ROW2>((int)numEntries);
+            destination.EnsureCapacity((int)numEntries);
             for (int i = 0; i < numEntries; i++)
             {
                 IntPtr rowPtr = IntPtr.Add(firstRow, i * rowSize);
@@ -119,14 +160,15 @@ public static partial class IpHlpApi
                 // StructLayout default before was Ansi, and even with CharSet.Unicode PtrToStructure is
                 // unnecessary overhead here) and corrupt them. The struct is entirely blittable (fixed
                 // buffers + primitives), so a raw pointer read reproduces the native memory exactly.
-                result.Add(*(MIB_IF_ROW2*)rowPtr);
+                destination.Add(*(MIB_IF_ROW2*)rowPtr);
             }
 
-            return result;
+            return true;
         }
         catch
         {
-            return Array.Empty<MIB_IF_ROW2>();
+            destination.Clear();
+            return false;
         }
         finally
         {

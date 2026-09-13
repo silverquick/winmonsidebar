@@ -50,6 +50,7 @@ public sealed class DiskProvider : IMetricProvider<DiskSnapshot>
     // ReadPdhRates() で毎秒使い回すバッファ。呼び出しの都度 Clear() してから詰め直す。
     private readonly Dictionary<int, PdhDiskRates> _pdhRatesByDriveBuffer = new();
     private readonly Dictionary<int, DiskRateAccumulator> _rateAccumulatorsBuffer = new();
+    private readonly List<DiskDeviceSnapshot> _deviceBuffer = new();
 
     public string Name => "Disk";
 
@@ -142,7 +143,11 @@ public sealed class DiskProvider : IMetricProvider<DiskSnapshot>
             IReadOnlyList<PhysicalDiskInfo> physicalDisks = staticState.PhysicalDisks;
             Dictionary<int, DiskStaticProjection> projections = staticState.Projections;
 
-            var devices = new List<DiskDeviceSnapshot>(physicalDisks.Count);
+            _deviceBuffer.Clear();
+            if (_deviceBuffer.Capacity < physicalDisks.Count)
+            {
+                _deviceBuffer.Capacity = physicalDisks.Count;
+            }
 
             foreach (PhysicalDiskInfo disk in physicalDisks)
             {
@@ -160,7 +165,7 @@ public sealed class DiskProvider : IMetricProvider<DiskSnapshot>
                         string.Create(CultureInfo.InvariantCulture, $"Disk {disk.DriveNumber}"));
                 }
 
-                devices.Add(new DiskDeviceSnapshot
+                _deviceBuffer.Add(new DiskDeviceSnapshot
                 {
                     PhysicalDriveNumber = disk.DriveNumber,
                     Model = disk.Model,
@@ -178,15 +183,25 @@ public sealed class DiskProvider : IMetricProvider<DiskSnapshot>
                 });
             }
 
-            devices.Sort((a, b) => a.PhysicalDriveNumber.CompareTo(b.PhysicalDriveNumber));
+            _deviceBuffer.Sort(static (a, b) => a.PhysicalDriveNumber.CompareTo(b.PhysicalDriveNumber));
 
-            double totalRead = total?.Read ?? devices.Sum(d => d.ReadBytesPerSec);
-            double totalWrite = total?.Write ?? devices.Sum(d => d.WriteBytesPerSec);
-            double totalBusy = total?.Busy ?? (devices.Count > 0 ? devices.Max(d => d.BusyPercent) : 0.0);
+            double totalRead = total?.Read ?? 0.0;
+            double totalWrite = total?.Write ?? 0.0;
+            double totalBusy = total?.Busy ?? 0.0;
+            if (total is null)
+            {
+                foreach (DiskDeviceSnapshot device in _deviceBuffer)
+                {
+                    totalRead += device.ReadBytesPerSec;
+                    totalWrite += device.WriteBytesPerSec;
+                    totalBusy = Math.Max(totalBusy, device.BusyPercent);
+                }
+            }
 
             return new DiskSnapshot
             {
-                Devices = devices,
+                // The working list is reused on the next sample, so publish a distinct backing collection.
+                Devices = _deviceBuffer.ToArray(),
                 TotalReadBytesPerSec = totalRead,
                 TotalWriteBytesPerSec = totalWrite,
                 BusyPercent = ClampPercent(totalBusy),

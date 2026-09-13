@@ -11,6 +11,12 @@ namespace Monitor.Windows.Providers;
 public sealed class NetworkProvider : IMetricProvider<NetworkSnapshot>
 {
     private readonly Dictionary<ulong, (ulong In, ulong Out)> _previous = new();
+    private readonly List<MIB_IF_ROW2> _interfaceRowsBuffer = new();
+    private readonly HashSet<ulong> _seenLuidsBuffer = new();
+    private readonly List<ulong> _staleLuidsBuffer = new();
+    private readonly Dictionary<ulong, NicText> _nicTextCache = new();
+
+    private readonly record struct NicText(string Alias, string Description);
 
     public string Name => "Network";
 
@@ -21,7 +27,7 @@ public sealed class NetworkProvider : IMetricProvider<NetworkSnapshot>
         try
         {
             // GetIfTable2 が使えるかどうかを軽く確認しておく。失敗してもここで例外は外に漏らさない。
-            IpHlpApi.ReadInterfaceTable();
+            IpHlpApi.ReadInterfaceTable(_interfaceRowsBuffer);
             IsAvailable = true;
         }
         catch
@@ -39,14 +45,15 @@ public sealed class NetworkProvider : IMetricProvider<NetworkSnapshot>
 
         try
         {
-            IReadOnlyList<MIB_IF_ROW2> rows = IpHlpApi.ReadInterfaceTable();
+            IpHlpApi.ReadInterfaceTable(_interfaceRowsBuffer);
+            IReadOnlyList<MIB_IF_ROW2> rows = _interfaceRowsBuffer;
             if (rows.Count == 0)
             {
                 return NetworkSnapshot.Empty;
             }
 
             double elapsedSeconds = elapsed.TotalSeconds;
-            var seenLuids = new HashSet<ulong>();
+            _seenLuidsBuffer.Clear();
             var interfaces = new List<NetworkInterfaceSnapshot>();
 
             foreach (MIB_IF_ROW2 row in rows)
@@ -66,13 +73,24 @@ public sealed class NetworkProvider : IMetricProvider<NetworkSnapshot>
                     continue;
                 }
 
-                string alias = row.GetAlias();
+                bool hasCachedText = _nicTextCache.TryGetValue(row.InterfaceLuid, out NicText cachedText);
+                string alias = hasCachedText && row.AliasEquals(cachedText.Alias)
+                    ? cachedText.Alias
+                    : row.GetAlias();
                 if (string.IsNullOrEmpty(alias))
                 {
                     continue;
                 }
 
-                seenLuids.Add(row.InterfaceLuid);
+                string description = hasCachedText && row.DescriptionEquals(cachedText.Description)
+                    ? cachedText.Description
+                    : row.GetDescription();
+                if (!hasCachedText || !ReferenceEquals(alias, cachedText.Alias) || !ReferenceEquals(description, cachedText.Description))
+                {
+                    _nicTextCache[row.InterfaceLuid] = new NicText(alias, description);
+                }
+
+                _seenLuidsBuffer.Add(row.InterfaceLuid);
 
                 double receiveBytesPerSec = 0;
                 double sendBytesPerSec = 0;
@@ -101,7 +119,7 @@ public sealed class NetworkProvider : IMetricProvider<NetworkSnapshot>
 
                 interfaces.Add(new NetworkInterfaceSnapshot(
                     Name: alias,
-                    Description: row.GetDescription(),
+                    Description: description,
                     LinkSpeedBitsPerSec: linkSpeed,
                     ReceiveBytesPerSec: receiveBytesPerSec,
                     SendBytesPerSec: sendBytesPerSec,
@@ -111,17 +129,18 @@ public sealed class NetworkProvider : IMetricProvider<NetworkSnapshot>
             // フィルタで除外されなくなった (抜けた) インターフェースの前回値は捨てておく。
             if (_previous.Count > 0)
             {
-                var stale = new List<ulong>();
+                _staleLuidsBuffer.Clear();
                 foreach (ulong luid in _previous.Keys)
                 {
-                    if (!seenLuids.Contains(luid))
+                    if (!_seenLuidsBuffer.Contains(luid))
                     {
-                        stale.Add(luid);
+                        _staleLuidsBuffer.Add(luid);
                     }
                 }
-                foreach (ulong luid in stale)
+                foreach (ulong luid in _staleLuidsBuffer)
                 {
                     _previous.Remove(luid);
+                    _nicTextCache.Remove(luid);
                 }
             }
 
