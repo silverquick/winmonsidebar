@@ -5,8 +5,10 @@ namespace Monitor.App.Controls;
 
 /// <summary>
 /// CPU の論理コアごとの使用率を格子状のセルで表示する（Task Manager の「論理プロセッサ」表示の簡易版）。
+/// 値の更新時に各コアの使用率に対して時間ベースの指数追従アニメーションを行い、
+/// 滑らかにバーの高さを変化させる。
 /// </summary>
-public sealed class CoreGrid : FrameworkElement
+public sealed class CoreGrid : FrameworkElement, IAnimatableControl
 {
     private static readonly Brush DefaultLowBrush = CreateFrozenSolid(Color.FromRgb(0x2D, 0x7D, 0x46));
     private static readonly Brush DefaultHighBrush = CreateFrozenSolid(Color.FromRgb(0xE0, 0x3A, 0x3A));
@@ -19,7 +21,13 @@ public sealed class CoreGrid : FrameworkElement
         nameof(Values),
         typeof(IReadOnlyList<double>),
         typeof(CoreGrid),
-        new FrameworkPropertyMetadata(Array.Empty<double>(), FrameworkPropertyMetadataOptions.AffectsRender));
+        new FrameworkPropertyMetadata(Array.Empty<double>(), OnValuesChanged));
+
+    public static readonly DependencyProperty SmoothingTimeProperty = DependencyProperty.Register(
+        nameof(SmoothingTime),
+        typeof(TimeSpan),
+        typeof(CoreGrid),
+        new FrameworkPropertyMetadata(TimeSpan.FromSeconds(0.15)));
 
     public static readonly DependencyProperty ColumnsProperty = DependencyProperty.Register(
         nameof(Columns),
@@ -51,10 +59,27 @@ public sealed class CoreGrid : FrameworkElement
         typeof(CoreGrid),
         new FrameworkPropertyMetadata(6.0, FrameworkPropertyMetadataOptions.AffectsRender));
 
+    private readonly ArrayInterpolator _interpolator = new();
+    private double[] _sanitizedBuffer = Array.Empty<double>();
+
+    public CoreGrid()
+    {
+        Loaded += OnLoaded;
+        Unloaded += OnUnloaded;
+        IsVisibleChanged += OnIsVisibleChanged;
+    }
+
     public IReadOnlyList<double> Values
     {
         get => (IReadOnlyList<double>)GetValue(ValuesProperty);
         set => SetValue(ValuesProperty, value);
+    }
+
+    /// <summary>指数追従の時定数 τ（既定 0.15 秒。コアごとの細かな変動を残すため短めにし、切り替わりの動きだけを滑らかにする。TimeSpan.Zero で即時反映）。</summary>
+    public TimeSpan SmoothingTime
+    {
+        get => (TimeSpan)GetValue(SmoothingTimeProperty);
+        set => SetValue(SmoothingTimeProperty, value);
     }
 
     public int Columns
@@ -90,6 +115,96 @@ public sealed class CoreGrid : FrameworkElement
         set => SetValue(MinCellWidthProperty, value);
     }
 
+    private static void OnValuesChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is CoreGrid grid)
+        {
+            var newValues = (IReadOnlyList<double>?)e.NewValue;
+            int count = newValues?.Count ?? 0;
+
+            if (grid._sanitizedBuffer.Length != count)
+            {
+                grid._sanitizedBuffer = count > 0 ? new double[count] : Array.Empty<double>();
+            }
+
+            for (int i = 0; i < count; i++)
+            {
+                double v = newValues![i];
+                double sanitized = double.IsFinite(v) ? Math.Clamp(v, 0.0, 100.0) : grid._interpolator.GetTarget(i);
+                grid._sanitizedBuffer[i] = sanitized;
+            }
+
+            if (count != grid._interpolator.Count || !grid.IsLoaded || !grid.IsVisible || grid.SmoothingTime <= TimeSpan.Zero)
+            {
+                grid._interpolator.SnapTo(grid._sanitizedBuffer);
+                grid.InvalidateVisual();
+                return;
+            }
+
+            grid._interpolator.SetTargets(grid._sanitizedBuffer);
+            if (!grid._interpolator.IsComplete)
+            {
+                FrameAnimationClock.Register(grid);
+            }
+            else
+            {
+                grid.InvalidateVisual();
+            }
+        }
+    }
+
+    private void OnLoaded(object sender, RoutedEventArgs e)
+    {
+        SnapToTargets();
+        InvalidateVisual();
+    }
+
+    private void OnUnloaded(object sender, RoutedEventArgs e)
+    {
+        SnapToTargets();
+        FrameAnimationClock.Unregister(this);
+    }
+
+    private void OnIsVisibleChanged(object sender, DependencyPropertyChangedEventArgs e)
+    {
+        if (!IsVisible)
+        {
+            SnapToTargets();
+            FrameAnimationClock.Unregister(this);
+        }
+        else
+        {
+            SnapToTargets();
+            InvalidateVisual();
+        }
+    }
+
+    private void SnapToTargets()
+    {
+        if (_interpolator.HasValue)
+        {
+            int count = _interpolator.Count;
+            if (_sanitizedBuffer.Length != count)
+            {
+                _sanitizedBuffer = count > 0 ? new double[count] : Array.Empty<double>();
+            }
+            for (int i = 0; i < count; i++)
+            {
+                _sanitizedBuffer[i] = _interpolator.GetTarget(i);
+            }
+            _interpolator.SnapTo(_sanitizedBuffer);
+        }
+    }
+
+    bool IAnimatableControl.OnAnimationFrame(double deltaSeconds)
+    {
+        double tau = SmoothingTime.TotalSeconds;
+        // 0.1% 相当の閾値で目標値へスナップ
+        bool complete = _interpolator.Update(deltaSeconds, tau, threshold: 0.1);
+        InvalidateVisual();
+        return !complete;
+    }
+
     protected override void OnRender(DrawingContext dc)
     {
         double width = RenderSize.Width;
@@ -99,8 +214,7 @@ public sealed class CoreGrid : FrameworkElement
             return;
         }
 
-        IReadOnlyList<double> values = Values;
-        int count = values?.Count ?? 0;
+        int count = _interpolator.HasValue ? _interpolator.Count : (Values?.Count ?? 0);
         if (count == 0)
         {
             return;
@@ -127,107 +241,107 @@ public sealed class CoreGrid : FrameworkElement
             double x = col * (cellWidth + gap);
             double y = row * (cellHeight + gap);
 
-            double value = Math.Clamp(values![i], 0.0, 100.0);
+            double rawVal = _interpolator.HasValue ? _interpolator.GetCurrent(i) : (Values != null && i < Values.Count ? Values[i] : 0.0);
+            double value = Math.Clamp(rawVal, 0.0, 100.0);
             double t = value / 100.0;
             int paletteIndex = (int)Math.Round(t * 100.0);
+            paletteIndex = Math.Clamp(paletteIndex, 0, 100);
 
-            Rect cellRect = new(x, y, cellWidth, cellHeight);
+            // セル背景（薄い色）
+            dc.DrawRectangle(basePalette[paletteIndex], null, new Rect(x, y, cellWidth, cellHeight));
 
-            // セル全体を淡い色で塗って土台にする。
-            dc.DrawRectangle(basePalette[paletteIndex], null, cellRect);
-
-            // 使用率バーを下から上に伸ばして描く。
+            // セル内の使用率バー（下から上へ伸びる）
             double barHeight = cellHeight * t;
-            if (barHeight > 0)
+            if (barHeight > 0.5)
             {
-                Rect barRect = new(x, y + (cellHeight - barHeight), cellWidth, barHeight);
-                dc.DrawRectangle(barPalette[paletteIndex], null, barRect);
+                double barY = y + cellHeight - barHeight;
+                dc.DrawRectangle(barPalette[paletteIndex], null, new Rect(x, barY, cellWidth, barHeight));
             }
         }
     }
 
-    private (Brush[] Base, Brush[] Bar) GetPalettes()
+    private (Brush[] basePalette, Brush[] barPalette) GetPalettes()
     {
-        Color low = GetColor(LowBrush);
-        Color high = GetColor(HighBrush);
-        if (_basePalette is not null && _barPalette is not null && low == _paletteLow && high == _paletteHigh)
+        Color low = ResolveSolidColor(LowBrush, Color.FromRgb(0x2D, 0x7D, 0x46));
+        Color high = ResolveSolidColor(HighBrush, Color.FromRgb(0xE0, 0x3A, 0x3A));
+
+        if (_basePalette is not null && _barPalette is not null && _paletteLow == low && _paletteHigh == high)
         {
             return (_basePalette, _barPalette);
         }
 
-        var bases = new Brush[101];
-        var bars = new Brush[101];
+        _basePalette = new Brush[101];
+        _barPalette = new Brush[101];
+
         for (int i = 0; i <= 100; i++)
         {
-            Color color = Lerp(low, high, i / 100.0);
-            bases[i] = CreateFrozenSolid(Color.FromArgb(0x40, color.R, color.G, color.B));
-            bars[i] = CreateFrozenSolid(color);
+            double t = i / 100.0;
+            byte r = (byte)(low.R + (high.R - low.R) * t);
+            byte g = (byte)(low.G + (high.G - low.G) * t);
+            byte b = (byte)(low.B + (high.B - low.B) * t);
+
+            // 背景は 15% 不透明度
+            _basePalette[i] = CreateFrozenSolid(Color.FromArgb((byte)Math.Round(255 * 0.15), r, g, b));
+            // バーは 90% 不透明度
+            _barPalette[i] = CreateFrozenSolid(Color.FromArgb((byte)Math.Round(255 * 0.90), r, g, b));
         }
 
         _paletteLow = low;
         _paletteHigh = high;
-        _basePalette = bases;
-        _barPalette = bars;
-        return (bases, bars);
+        return (_basePalette, _barPalette);
+    }
+
+    private static Color ResolveSolidColor(Brush brush, Color fallback)
+    {
+        if (brush is SolidColorBrush scb)
+        {
+            return scb.Color;
+        }
+        return fallback;
     }
 
     private int ResolveColumns(int count, double width, double height, double gap)
     {
-        int columns = Columns;
-        if (columns > 0)
+        if (Columns > 0)
         {
-            return Math.Min(columns, count);
+            return Math.Clamp(Columns, 1, count);
         }
 
-        double minCellWidth = Math.Max(1.0, MinCellWidth);
+        double minWidth = Math.Max(1.0, MinCellWidth);
+        int maxPossible = (int)Math.Floor((width + gap) / (minWidth + gap));
+        maxPossible = Math.Clamp(maxPossible, 1, count);
 
-        // まず横一列に収まるかを試す。論理コアの一覧は横一列が最も読みやすく、
-        // 「12 個中 11 個までが 1 行目、12 個目だけ 2 行目」のような半端な折り返しを避けたい。
-        // 以前はセルが正方形に近くなる列数（sqrt(count * 幅/高さ)）だけを見ていたため、
-        // 幅 316 / 高さ 30 / 12 コアで 11 列となり、まさにその折り返しが起きていた。
-        if ((width - gap * (count - 1)) / count >= minCellWidth)
+        // 1 行に収まるならそのまま
+        if (maxPossible >= count)
         {
             return count;
         }
 
-        // 1 行に入らない場合は正方形に近い列数を起点にしつつ、最終行が極端に空く配置を避ける。
-        double aspect = width / Math.Max(height, 1.0);
-        int ideal = Math.Clamp((int)Math.Round(Math.Sqrt(count * aspect)), 1, count);
+        // 収まらない場合は、アスペクト比を考慮して最適な列数を探す
+        int bestCols = maxPossible;
+        double bestPenalty = double.MaxValue;
 
-        int best = ideal;
-        int bestWaste = int.MaxValue;
-        for (int c = Math.Max(1, ideal - 3); c <= Math.Min(count, ideal + 3); c++)
+        for (int cols = maxPossible; cols >= 1; cols--)
         {
-            if ((width - gap * (c - 1)) / c < minCellWidth)
+            int rows = (int)Math.Ceiling(count / (double)cols);
+            double cw = (width - gap * (cols - 1)) / cols;
+            double ch = (height - gap * (rows - 1)) / rows;
+            if (cw <= 0 || ch <= 0)
             {
                 continue;
             }
 
-            int rows = (int)Math.Ceiling(count / (double)c);
-            int waste = (c * rows) - count;
-            if (waste < bestWaste ||
-                (waste == bestWaste && Math.Abs(c - ideal) < Math.Abs(best - ideal)))
+            // 正方形に近いほどペナルティ小
+            double ratio = cw / ch;
+            double penalty = Math.Abs(Math.Log(ratio));
+            if (penalty < bestPenalty)
             {
-                best = c;
-                bestWaste = waste;
+                bestPenalty = penalty;
+                bestCols = cols;
             }
         }
 
-        return best;
-    }
-
-    private static Color GetColor(Brush brush)
-    {
-        return brush is SolidColorBrush solid ? solid.Color : Colors.Gray;
-    }
-
-    private static Color Lerp(Color from, Color to, double t)
-    {
-        t = Math.Clamp(t, 0.0, 1.0);
-        byte r = (byte)Math.Round(from.R + (to.R - from.R) * t);
-        byte g = (byte)Math.Round(from.G + (to.G - from.G) * t);
-        byte b = (byte)Math.Round(from.B + (to.B - from.B) * t);
-        return Color.FromRgb(r, g, b);
+        return Math.Max(1, bestCols);
     }
 
     private static Brush CreateFrozenSolid(Color color)
