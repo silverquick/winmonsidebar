@@ -20,6 +20,12 @@ public sealed class MetricsHubOptions
     public TimeSpan VolumeInterval { get; init; } = TimeSpan.FromSeconds(5);
 
     public int TopProcessCount { get; init; } = 8;
+
+    /// <summary>
+    /// 診断ログの出力先（メッセージ, 例外）。バックグラウンドスレッドから呼ばれるため、実装はスレッドセーフであること。
+    /// 同じ失敗が続く間は連打せず、失敗開始時と回復時にだけ呼ばれる。sink 自体の例外は hub 内で握りつぶす。
+    /// </summary>
+    public Action<string, Exception?>? Log { get; init; }
 }
 
 /// <summary>
@@ -54,6 +60,27 @@ public sealed class MetricsHub : IAsyncDisposable
     private ThermalSnapshot _lastThermal = ThermalSnapshot.Empty;
     private IReadOnlyList<VolumeSnapshot> _lastVolumes = Array.Empty<VolumeSnapshot>();
 
+    // 失敗の連続状態。ログを「失敗開始時 1 回・回復時 1 回」に絞るために使う。
+    // プロバイダ単位のものは担当レーンからしか触らないが、Publish の購読者用は全レーンから触るため、
+    // FailureTracker 自体を lock で保護して一律にスレッドセーフにしている。
+    private readonly FailureTracker _cpuFailures;
+    private readonly FailureTracker _memoryFailures;
+    private readonly FailureTracker _diskFailures;
+    private readonly FailureTracker _networkFailures;
+    private readonly FailureTracker _gpuFailures;
+    private readonly FailureTracker _processFailures;
+    private readonly FailureTracker _thermalFailures;
+    private readonly FailureTracker _volumeFailures;
+    private readonly FailureTracker _diskAlertFailures;
+    private readonly FailureTracker _subscriberFailures;
+    private readonly FailureTracker _fastLaneFailures;
+    private readonly FailureTracker _processLaneFailures;
+    private readonly FailureTracker _thermalLaneFailures;
+    private readonly FailureTracker _volumeLaneFailures;
+
+    /// <summary>テスト用の seam。各レーンの 1 周の先頭（try の内側）でレーン名を渡して呼ばれる。</summary>
+    internal Action<string>? LaneIterationHookForTest { get; set; }
+
     public MetricsHub(
         MetricsHubOptions options,
         IMetricProvider<CpuSnapshot> cpu,
@@ -75,6 +102,23 @@ public sealed class MetricsHub : IAsyncDisposable
         _thermal = thermal;
         _volumes = volumes;
         _cpuDetails = cpu as IDetailSamplingProvider;
+
+        // ログ用デリゲートは 1 度だけ生成し、毎秒のサンプリングで割り当てを発生させない。
+        Action<string, Exception?> log = LogSafe;
+        _cpuFailures = new FailureTracker(ProviderLabel(cpu), log);
+        _memoryFailures = new FailureTracker(ProviderLabel(memory), log);
+        _diskFailures = new FailureTracker(ProviderLabel(disk), log);
+        _networkFailures = new FailureTracker(ProviderLabel(network), log);
+        _gpuFailures = new FailureTracker(ProviderLabel(gpu), log);
+        _processFailures = new FailureTracker(ProviderLabel(processes), log);
+        _thermalFailures = new FailureTracker(ProviderLabel(thermal), log);
+        _volumeFailures = new FailureTracker(ProviderLabel(volumes), log);
+        _diskAlertFailures = new FailureTracker("DiskBusyAlertTracker の更新", log);
+        _subscriberFailures = new FailureTracker("SnapshotAvailable 購読者", log);
+        _fastLaneFailures = new FailureTracker("fast レーン", log);
+        _processLaneFailures = new FailureTracker("process レーン", log);
+        _thermalLaneFailures = new FailureTracker("thermal レーン", log);
+        _volumeLaneFailures = new FailureTracker("volume レーン", log);
 
         History = new MetricsHistory();
     }
@@ -133,17 +177,46 @@ public sealed class MetricsHub : IAsyncDisposable
 
         while (await timer.WaitForNextTickAsync(token).ConfigureAwait(false))
         {
-            TimeSpan elapsed = stopwatch.Elapsed;
-            stopwatch.Restart();
+            // ループ本体の例外でレーンが静かに止まらないよう、待機以外はすべて try の内側で行う。
+            try
+            {
+                LaneIterationHookForTest?.Invoke("fast");
 
-            CpuSnapshot cpu = SampleSafe(_cpu, elapsed, CpuSnapshot.Empty);
-            MemorySnapshot memory = SampleSafe(_memory, elapsed, MemorySnapshot.Empty);
-            DiskSnapshot rawDisk = SampleSafe(_disk, elapsed, DiskSnapshot.Empty);
+                TimeSpan elapsed = stopwatch.Elapsed;
+                stopwatch.Restart();
+
+                CpuSnapshot cpu = SampleSafe(_cpu, _cpuFailures, elapsed, CpuSnapshot.Empty);
+                MemorySnapshot memory = SampleSafe(_memory, _memoryFailures, elapsed, MemorySnapshot.Empty);
+                DiskSnapshot rawDisk = SampleSafe(_disk, _diskFailures, elapsed, DiskSnapshot.Empty);
+                DiskSnapshot disk = UpdateDiskAlertsSafe(rawDisk, elapsed);
+                NetworkSnapshot network = SampleSafe(_network, _networkFailures, elapsed, NetworkSnapshot.Empty);
+                GpuSnapshot gpu = SampleSafe(_gpu, _gpuFailures, elapsed, GpuSnapshot.Empty);
+
+                Publish(cpu: cpu, memory: memory, disk: disk, network: network, gpu: gpu, appendHistory: true);
+                _fastLaneFailures.RecordSuccess();
+            }
+            catch (Exception ex) when (!IsCancellation(ex, token))
+            {
+                _fastLaneFailures.RecordFailure(ex);
+            }
+        }
+    }
+
+    /// <summary>
+    /// 高 Busy 継続警告を付与する。失敗しても fast レーンの公開を止めないよう、警告なしの生値で代用する。
+    /// </summary>
+    private DiskSnapshot UpdateDiskAlertsSafe(DiskSnapshot rawDisk, TimeSpan elapsed)
+    {
+        try
+        {
             DiskSnapshot disk = _diskAlertTracker.Update(rawDisk, elapsed);
-            NetworkSnapshot network = SampleSafe(_network, elapsed, NetworkSnapshot.Empty);
-            GpuSnapshot gpu = SampleSafe(_gpu, elapsed, GpuSnapshot.Empty);
-
-            Publish(cpu: cpu, memory: memory, disk: disk, network: network, gpu: gpu, appendHistory: true);
+            _diskAlertFailures.RecordSuccess();
+            return disk;
+        }
+        catch (Exception ex)
+        {
+            _diskAlertFailures.RecordFailure(ex);
+            return rawDisk;
         }
     }
 
@@ -155,12 +228,22 @@ public sealed class MetricsHub : IAsyncDisposable
 
         while (await timer.WaitForNextTickAsync(token).ConfigureAwait(false))
         {
-            TimeSpan elapsed = stopwatch.Elapsed;
-            stopwatch.Restart();
-            last = Volatile.Read(ref _processSamplingEnabled) != 0
-                ? SampleSafe(_processes, elapsed, last)
-                : ProcessSnapshot.Empty;
-            Publish(processes: last);
+            try
+            {
+                LaneIterationHookForTest?.Invoke("process");
+
+                TimeSpan elapsed = stopwatch.Elapsed;
+                stopwatch.Restart();
+                last = Volatile.Read(ref _processSamplingEnabled) != 0
+                    ? SampleSafe(_processes, _processFailures, elapsed, last)
+                    : ProcessSnapshot.Empty;
+                Publish(processes: last);
+                _processLaneFailures.RecordSuccess();
+            }
+            catch (Exception ex) when (!IsCancellation(ex, token))
+            {
+                _processLaneFailures.RecordFailure(ex);
+            }
         }
     }
 
@@ -172,10 +255,20 @@ public sealed class MetricsHub : IAsyncDisposable
 
         while (await timer.WaitForNextTickAsync(token).ConfigureAwait(false))
         {
-            TimeSpan elapsed = stopwatch.Elapsed;
-            stopwatch.Restart();
-            last = SampleSafe(_thermal, elapsed, last);
-            Publish(thermal: last);
+            try
+            {
+                LaneIterationHookForTest?.Invoke("thermal");
+
+                TimeSpan elapsed = stopwatch.Elapsed;
+                stopwatch.Restart();
+                last = SampleSafe(_thermal, _thermalFailures, elapsed, last);
+                Publish(thermal: last);
+                _thermalLaneFailures.RecordSuccess();
+            }
+            catch (Exception ex) when (!IsCancellation(ex, token))
+            {
+                _thermalLaneFailures.RecordFailure(ex);
+            }
         }
     }
 
@@ -187,12 +280,26 @@ public sealed class MetricsHub : IAsyncDisposable
 
         while (await timer.WaitForNextTickAsync(token).ConfigureAwait(false))
         {
-            TimeSpan elapsed = stopwatch.Elapsed;
-            stopwatch.Restart();
-            last = SampleSafe(_volumes, elapsed, last);
-            Publish(volumes: last);
+            try
+            {
+                LaneIterationHookForTest?.Invoke("volume");
+
+                TimeSpan elapsed = stopwatch.Elapsed;
+                stopwatch.Restart();
+                last = SampleSafe(_volumes, _volumeFailures, elapsed, last);
+                Publish(volumes: last);
+                _volumeLaneFailures.RecordSuccess();
+            }
+            catch (Exception ex) when (!IsCancellation(ex, token))
+            {
+                _volumeLaneFailures.RecordFailure(ex);
+            }
         }
     }
+
+    /// <summary>Dispose による正常なキャンセルかどうか。それ以外の OperationCanceledException は失敗として扱う。</summary>
+    private static bool IsCancellation(Exception ex, CancellationToken token) =>
+        ex is OperationCanceledException && token.IsCancellationRequested;
 
     /// <summary>1つのレーンで更新された値を反映し、他レーンの直近値と合成して公開する。</summary>
     private void Publish(
@@ -239,14 +346,16 @@ public sealed class MetricsHub : IAsyncDisposable
         try
         {
             SnapshotAvailable?.Invoke(snapshot);
+            _subscriberFailures.RecordSuccess();
         }
-        catch
+        catch (Exception ex)
         {
-            // 購読側の例外でサンプリングループを止めない。
+            // 購読側の例外でサンプリングループを止めない。記録は失敗開始時と回復時だけ。
+            _subscriberFailures.RecordFailure(ex);
         }
     }
 
-    private static T SampleSafe<T>(IMetricProvider<T> provider, TimeSpan elapsed, T fallback)
+    private T SampleSafe<T>(IMetricProvider<T> provider, FailureTracker failures, TimeSpan elapsed, T fallback)
     {
         try
         {
@@ -255,10 +364,13 @@ public sealed class MetricsHub : IAsyncDisposable
                 return fallback;
             }
 
-            return provider.Sample(elapsed);
+            T value = provider.Sample(elapsed);
+            failures.RecordSuccess();
+            return value;
         }
-        catch
+        catch (Exception ex)
         {
+            failures.RecordFailure(ex);
             return fallback;
         }
     }
@@ -275,17 +387,33 @@ public sealed class MetricsHub : IAsyncDisposable
         TryInitialize(_volumes);
     }
 
-    private static void TryInitialize<T>(IMetricProvider<T> provider)
+    private void TryInitialize<T>(IMetricProvider<T> provider)
     {
         try
         {
             provider.Initialize();
         }
-        catch
+        catch (Exception ex)
         {
-            // Provider の契約上ここには到達しないはずだが、防御的に無視する。
+            // Provider の契約上ここには到達しないはずだが、防御的に握りつぶし、原因だけは記録する。
+            LogSafe($"MetricsHub: {ProviderLabel(provider)} の初期化に失敗しました", ex);
         }
     }
+
+    /// <summary>ログ sink を呼ぶ。sink 自体の例外はサンプリングに影響させない。</summary>
+    private void LogSafe(string message, Exception? exception)
+    {
+        try
+        {
+            _options.Log?.Invoke(message, exception);
+        }
+        catch
+        {
+            // ログ出力の失敗でサンプリングを止めない。
+        }
+    }
+
+    private static string ProviderLabel(object provider) => provider.GetType().Name;
 
     public async ValueTask DisposeAsync()
     {
@@ -319,13 +447,16 @@ public sealed class MetricsHub : IAsyncDisposable
         DisposeProvider(_volumes);
     }
 
-    /// <summary>テスト用の MetricsHub を生成する。</summary>
-    internal static MetricsHub CreateForTest(MetricsHubOptions? options = null) =>
+    /// <summary>テスト用の MetricsHub を生成する。指定しなかったプロバイダは固定値を返すダミーになる。</summary>
+    internal static MetricsHub CreateForTest(
+        MetricsHubOptions? options = null,
+        IMetricProvider<CpuSnapshot>? cpu = null,
+        IMetricProvider<DiskSnapshot>? disk = null) =>
         new(
             options ?? new MetricsHubOptions(),
-            new NullMetricProvider<CpuSnapshot>(CpuSnapshot.Empty),
+            cpu ?? new NullMetricProvider<CpuSnapshot>(CpuSnapshot.Empty),
             new NullMetricProvider<MemorySnapshot>(MemorySnapshot.Empty),
-            new NullMetricProvider<DiskSnapshot>(DiskSnapshot.Empty),
+            disk ?? new NullMetricProvider<DiskSnapshot>(DiskSnapshot.Empty),
             new NullMetricProvider<NetworkSnapshot>(NetworkSnapshot.Empty),
             new NullMetricProvider<GpuSnapshot>(GpuSnapshot.Empty),
             new NullMetricProvider<ProcessSnapshot>(ProcessSnapshot.Empty),
@@ -376,5 +507,45 @@ public sealed class MetricsHub : IAsyncDisposable
         public void Initialize() { }
         public ThermalSnapshot Sample(TimeSpan elapsed) => ThermalSnapshot.Empty;
         public void Dispose() { }
+    }
+
+    /// <summary>
+    /// 1 つの失敗源（プロバイダ・購読者・レーン）の連続失敗状態を持ち、ログを
+    /// 「失敗開始時に 1 回（例外付き）」と「回復時に 1 回（連続失敗回数）」だけに絞る。
+    /// 購読者用は複数レーンから同時に触られるため、lock で保護する。
+    /// </summary>
+    private sealed class FailureTracker(string subject, Action<string, Exception?> log)
+    {
+        private readonly object _gate = new();
+        private int _consecutiveFailures;
+
+        public void RecordFailure(Exception exception)
+        {
+            bool isFirst;
+            lock (_gate)
+            {
+                isFirst = ++_consecutiveFailures == 1;
+            }
+
+            if (isFirst)
+            {
+                log($"MetricsHub: {subject} で例外が発生しました（回復するまで以降の同種の失敗は記録しません）", exception);
+            }
+        }
+
+        public void RecordSuccess()
+        {
+            int failures;
+            lock (_gate)
+            {
+                failures = _consecutiveFailures;
+                _consecutiveFailures = 0;
+            }
+
+            if (failures > 0)
+            {
+                log($"MetricsHub: {subject} が回復しました（連続失敗 {failures} 回）", null);
+            }
+        }
     }
 }

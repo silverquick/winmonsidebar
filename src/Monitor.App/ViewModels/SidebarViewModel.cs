@@ -25,6 +25,7 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
     private readonly Dispatcher _dispatcher;
     private readonly DispatcherTimer _clockTimer;
     private readonly AppSettings _settings;
+    private readonly Action<AppSettings> _saveSettings;
     private readonly int _topProcessCount;
     private bool _disposed;
     private DateTimeOffset _lastAppliedSnapshotTimestamp = DateTimeOffset.UnixEpoch;
@@ -42,10 +43,17 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
     private readonly List<string> _desiredStorageKeysBuffer = new();
 
     public SidebarViewModel(MetricsHub hub, Dispatcher dispatcher, AppSettings settings)
+        : this(hub, dispatcher, settings, SettingsStore.SaveDebounced)
+    {
+    }
+
+    /// <param name="saveSettings">展開状態の変更時に呼ぶ保存処理。テストではファイルへ書かない処理に差し替える。</param>
+    internal SidebarViewModel(MetricsHub hub, Dispatcher dispatcher, AppSettings settings, Action<AppSettings> saveSettings)
     {
         _hub = hub;
         _dispatcher = dispatcher;
         _settings = settings;
+        _saveSettings = saveSettings;
         _topProcessCount = Math.Max(1, settings.TopProcessCount);
 
         Processes = new ObservableCollection<ProcessRowViewModel>();
@@ -1556,7 +1564,8 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
         field = value;
         _settings.ExpandedSections[key] = value;
         PropertyChanged?.Invoke(this, GetPropertyChangedEventArgs(propertyName));
-        SettingsStore.Save(_settings);
+        // UI スレッドでは JSON のスナップショット化だけを行い、ファイル書き込みは debounce してバックグラウンドで行う。
+        _saveSettings(_settings);
     }
 
     public void Dispose()

@@ -78,6 +78,18 @@ public partial class App : Application
         var options = new MetricsHubOptions
         {
             TopProcessCount = settings.TopProcessCount,
+            // サンプリング失敗の診断用。バックグラウンドスレッドから呼ばれるが、AppLog は内部で lock し例外も投げない。
+            Log = static (message, exception) =>
+            {
+                if (exception is null)
+                {
+                    AppLog.Write(message);
+                }
+                else
+                {
+                    AppLog.Write(message, exception);
+                }
+            },
         };
         _hub = new MetricsHub(
             options,
@@ -167,6 +179,17 @@ public partial class App : Application
             {
                 // 終了処理中の例外でプロセス終了を妨げない。
             }
+        }
+
+        // 展開トグルなどで debounce 中の設定保存を取りこぼさないよう、終了前に同期で書き出す。
+        // ウィンドウはこの時点で閉じているため、以降に新しい保存要求は来ない。
+        try
+        {
+            SettingsStore.FlushPendingSaves();
+        }
+        catch
+        {
+            // 保存失敗でプロセス終了を妨げない（FlushPendingSaves 自体も例外を投げない想定）。
         }
 
         try

@@ -48,7 +48,8 @@ public partial class SidebarWindow : AppBarWindow
     {
         ThicknessDip = FixedThicknessDip;
         _settings.ThicknessDip = FixedThicknessDip;
-        SettingsStore.Save(_settings);
+        // UI スレッドでの同期ファイル書き込みを避け、展開トグルと同じ debounce 経路で保存する。
+        SettingsStore.SaveDebounced(_settings);
     }
 
     private void OnRestartAsAdminMenuItemClick(object sender, RoutedEventArgs e)
