@@ -105,26 +105,18 @@ public partial class App : Application
         // 温度・ファンは権限とハードウェアに強く依存し、取れないときの原因が画面からは分からない。
         // 「管理者で起動したのに温度が出ない」ときに、権限・プロバイダ・センサーのどこで
         // 止まっているのかをログだけで切り分けられるよう、最初の取得結果を 1 度だけ記録する。
-        var thermalLogged = false;
-        var snapshotsSeen = 0;
+        // Thermal レーンの初回サンプリング前の初期値を記録しないよう、判定は ThermalStartupLogGate に任せる。
+        var thermalLogGate = new ThermalStartupLogGate();
         _hub.SnapshotAvailable += snapshot =>
         {
-            if (thermalLogged)
-            {
-                return;
-            }
-
-            snapshotsSeen++;
             ThermalSnapshot t = snapshot.Thermal;
-            if (!t.IsAvailable && snapshotsSeen < 5)
+            if (!thermalLogGate.ShouldLog(t, out bool sampled))
             {
-                // 最初の数回はまだ Thermal のサンプリング周期に入っていない可能性がある。
                 return;
             }
 
-            thermalLogged = true;
             AppLog.Write(
-                $"thermal: available={t.IsAvailable} elevated={t.IsElevated} source={t.Source} " +
+                $"thermal: sampled={sampled} available={t.IsAvailable} elevated={t.IsElevated} source={t.Source} " +
                 $"cpuPackage={Fmt(t.CpuPackageTemperatureC)} cpuCores={t.CpuCoreTemperatures.Count} " +
                 $"cpuPower={Fmt(t.CpuPackagePowerWatts)} motherboard={Fmt(t.MotherboardTemperatureC)} " +
                 $"vrm={Fmt(t.VrmTemperatureC)} fans={t.Fans.Count} " +
