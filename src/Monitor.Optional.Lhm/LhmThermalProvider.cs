@@ -358,6 +358,15 @@ public sealed class LhmThermalProvider : IThermalProvider
         // ---- ディスク温度（モデル名で照合できるよう hw.Name を使う） ----
         if (hwType == HardwareType.Storage && sensor.SensorType == SensorType.Temperature)
         {
+            // NVMe では "Warning Temperature" / "Critical Temperature" も温度センサーとして並ぶが、
+            // これはドライブが申告する閾値（例: WD Blue SN580 で 83/87°C）であって測定値ではない。
+            // 取り込むと過熱しているように見え、モデル名照合の順序次第では表示にも出てしまうため除外する。
+            // 閾値は Monitor.Windows の DiskProvider が別途 WarningTemperatureC / CriticalTemperatureC として扱う。
+            if (IsStorageThresholdSensor(rawName))
+            {
+                return;
+            }
+
             // hw.Name は末尾に空白が入ることがある（例: "INTEL SSDSC2CT120A3      "）。
             // 呼び出し側はモデル名で照合するので、ここで詰めておく。
             storageTemps.Add(new SensorReading((hw.Name ?? name).Trim(), value));
@@ -368,6 +377,14 @@ public sealed class LhmThermalProvider : IThermalProvider
     /// 温度として現実的な範囲か。0 以下と 150°C 超はセンサーが読めていないときの値とみなす。
     /// </summary>
     private static bool IsPlausibleTemperature(double celsius) => celsius > 0.0 && celsius < 150.0;
+
+    /// <summary>
+    /// LHM のストレージ温度センサーのうち、測定値ではなく閾値を表すものか（センサー名の別名適用前の名前で判定する）。
+    /// </summary>
+    internal static bool IsStorageThresholdSensor(string rawSensorName) =>
+        rawSensorName.Trim() is var n &&
+        (n.Equals("Warning Temperature", StringComparison.OrdinalIgnoreCase) ||
+         n.Equals("Critical Temperature", StringComparison.OrdinalIgnoreCase));
 
     /// <summary>
     /// 全ハードウェア（サブハードウェアも含む）の値を更新してから走査するための Visitor。
