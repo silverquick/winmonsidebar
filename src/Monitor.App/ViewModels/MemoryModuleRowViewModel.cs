@@ -9,8 +9,9 @@ namespace Monitor.App.ViewModels;
 /// </summary>
 public sealed class MemoryModuleRowViewModel
 {
-    public MemoryModuleRowViewModel(MemoryModuleInfo m)
+    public MemoryModuleRowViewModel(MemoryModuleInfo m, bool unavailable = false)
     {
+        if (unavailable) { SlotText = CapacityText = SpeedText = ManufacturerText = PartNumberText = "—"; return; }
         SlotText = string.IsNullOrWhiteSpace(m.Slot) ? "—" : m.Slot;
         CapacityText = m.CapacityBytes > 0
             ? string.Create(CultureInfo.InvariantCulture, $"{m.CapacityBytes / 1024.0 / 1024.0 / 1024.0:F0}GB")

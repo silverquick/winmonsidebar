@@ -134,6 +134,24 @@ public sealed class StorageRowViewModel : INotifyPropertyChanged
     /// <summary>"使用 / 合計" 容量（例: "1.4 / 2.0 TB"）。未準備・容量不明なら "—"。</summary>
     public string CapacityText { get => _capacityText; private set => SetProperty(ref _capacityText, value); }
 
+    public void MarkDiskUnavailable()
+    {
+        Kind = StorageRowKind.Disk;
+        ModelText = BusTypeText = ReadText = WriteText = BusyPercentText = TemperatureText = TooltipText = "—";
+        AlertLevel = BusyAlertLevel = TemperatureAlertLevel = AlertLevel.None;
+        WriteHistory = Array.Empty<float>();
+    }
+
+    public void MarkVolumeUnavailable(StorageRowKind kind, bool hasCapacity)
+    {
+        Kind = kind;
+        HasCapacity = hasCapacity;
+        IsNetwork = kind == StorageRowKind.Network;
+        DriveLetterText = LabelText = UsagePercentText = CapacityText = TooltipText = "—";
+        GaugeValue = 0;
+        AlertLevel = BusyAlertLevel = TemperatureAlertLevel = AlertLevel.None;
+    }
+
     /// <summary>物理ディスク見出し行として更新する。</summary>
     public void UpdateAsDisk(
         string modelText,

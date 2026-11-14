@@ -7,8 +7,9 @@ namespace Monitor.App.ViewModels;
 /// <summary>ページファイル一覧の1行分。都度イミュータブルに作り直す（<see cref="MemoryModuleRowViewModel"/> と同じ方針）。</summary>
 public sealed class PageFileRowViewModel
 {
-    public PageFileRowViewModel(PageFileInfo p)
+    public PageFileRowViewModel(PageFileInfo p, bool unavailable = false)
     {
+        if (unavailable) { PathText = PercentText = UsageText = PeakText = "—"; return; }
         PathText = string.IsNullOrWhiteSpace(p.Path) ? "—" : p.Path;
         PercentText = ByteFormatter.Percent(p.UsagePercent);
         GaugeValue = Math.Clamp(p.UsagePercent, 0.0, 100.0);

@@ -41,6 +41,8 @@ public sealed class NetworkInterfaceRowViewModel : INotifyPropertyChanged
         string.Equals(_name, nic.Name, StringComparison.Ordinal)
         && string.Equals(_description, nic.Description, StringComparison.Ordinal);
 
+    public void MarkUnavailable() => NameText = DownText = UpText = "—";
+
     public void Update(NetworkInterfaceSnapshot nic)
     {
         _name = nic.Name;

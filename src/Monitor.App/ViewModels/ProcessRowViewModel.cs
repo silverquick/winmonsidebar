@@ -42,6 +42,8 @@ public sealed class ProcessRowViewModel : INotifyPropertyChanged
         private set => SetProperty(ref _memoryText, value);
     }
 
+    public void MarkUnavailable() => Name = CpuText = MemoryText = "—";
+
     public void Update(ProcessInfo info)
     {
         Name = string.IsNullOrEmpty(info.Name) ? $"PID {info.Pid}" : info.Name;

@@ -65,23 +65,29 @@ public sealed class MetricsHistory
     {
         lock (_lock)
         {
-            _cpuTotal.Add((float)s.Cpu.TotalUsagePercent);
-            _gpuTotal.Add((float)s.Gpu.TotalUsagePercent);
-            _memoryUsedPercent.Add((float)s.Memory.UsedPercent);
-            _netReceiveBytesPerSec.Add((float)s.Network.TotalReceiveBytesPerSec);
-            _netSendBytesPerSec.Add((float)s.Network.TotalSendBytesPerSec);
-            _diskReadBytesPerSec.Add((float)s.Disk.TotalReadBytesPerSec);
-            _diskWriteBytesPerSec.Add((float)s.Disk.TotalWriteBytesPerSec);
+            if ((s.UnavailableSources & MetricSources.Cpu) == 0) _cpuTotal.Add((float)s.Cpu.TotalUsagePercent);
+            if ((s.UnavailableSources & MetricSources.Gpu) == 0) _gpuTotal.Add((float)s.Gpu.TotalUsagePercent);
+            if ((s.UnavailableSources & MetricSources.Memory) == 0) _memoryUsedPercent.Add((float)s.Memory.UsedPercent);
+            if ((s.UnavailableSources & MetricSources.Network) == 0) _netReceiveBytesPerSec.Add((float)s.Network.TotalReceiveBytesPerSec);
+            if ((s.UnavailableSources & MetricSources.Network) == 0) _netSendBytesPerSec.Add((float)s.Network.TotalSendBytesPerSec);
+            if ((s.UnavailableSources & MetricSources.Disk) == 0) _diskReadBytesPerSec.Add((float)s.Disk.TotalReadBytesPerSec);
+            if ((s.UnavailableSources & MetricSources.Disk) == 0) _diskWriteBytesPerSec.Add((float)s.Disk.TotalWriteBytesPerSec);
 
             double? gpuTemperature = s.Gpu.Adapters.Count > 0 ? s.Gpu.Adapters[0].TemperatureC : null;
             float gpuTemperatureValue = gpuTemperature.HasValue ? (float)gpuTemperature.Value : _lastGpuTemperature;
-            _gpuTemperature.Add(gpuTemperatureValue);
-            _lastGpuTemperature = gpuTemperatureValue;
+            if ((s.UnavailableSources & MetricSources.Gpu) == 0)
+            {
+                _gpuTemperature.Add(gpuTemperatureValue);
+                _lastGpuTemperature = gpuTemperatureValue;
+            }
 
             double? cpuTemperature = s.Cpu.PackageTemperatureC;
             float cpuTemperatureValue = cpuTemperature.HasValue ? (float)cpuTemperature.Value : _lastCpuTemperature;
-            _cpuTemperature.Add(cpuTemperatureValue);
-            _lastCpuTemperature = cpuTemperatureValue;
+            if ((s.UnavailableSources & MetricSources.Cpu) == 0)
+            {
+                _cpuTemperature.Add(cpuTemperatureValue);
+                _lastCpuTemperature = cpuTemperatureValue;
+            }
         }
     }
 

@@ -34,6 +34,9 @@ public sealed class MetricsHubOptions
 /// </summary>
 public sealed class MetricsHub : IAsyncDisposable
 {
+    public const int UnavailableAfterConsecutiveFailures = 3;
+
+    private MetricSources _unavailableSources;
     private readonly MetricsHubOptions _options;
     private readonly IMetricProvider<CpuSnapshot> _cpu;
     private readonly IMetricProvider<MemorySnapshot> _memory;
@@ -185,14 +188,20 @@ public sealed class MetricsHub : IAsyncDisposable
                 TimeSpan elapsed = stopwatch.Elapsed;
                 stopwatch.Restart();
 
-                CpuSnapshot cpu = SampleSafe(_cpu, _cpuFailures, elapsed, CpuSnapshot.Empty);
-                MemorySnapshot memory = SampleSafe(_memory, _memoryFailures, elapsed, MemorySnapshot.Empty);
-                DiskSnapshot rawDisk = SampleSafe(_disk, _diskFailures, elapsed, DiskSnapshot.Empty);
-                DiskSnapshot disk = UpdateDiskAlertsSafe(rawDisk, elapsed);
-                NetworkSnapshot network = SampleSafe(_network, _networkFailures, elapsed, NetworkSnapshot.Empty);
-                GpuSnapshot gpu = SampleSafe(_gpu, _gpuFailures, elapsed, GpuSnapshot.Empty);
+                CpuSnapshot cpu = SampleSafe(_cpu, _cpuFailures, elapsed, _lastCpu);
+                MemorySnapshot memory = SampleSafe(_memory, _memoryFailures, elapsed, _lastMemory);
+                DiskSnapshot rawDisk = SampleSafe(_disk, _diskFailures, elapsed, _lastDisk);
+                DiskSnapshot disk = _diskFailures.IsUnavailable ? rawDisk : UpdateDiskAlertsSafe(rawDisk, elapsed);
+                NetworkSnapshot network = SampleSafe(_network, _networkFailures, elapsed, _lastNetwork);
+                GpuSnapshot gpu = SampleSafe(_gpu, _gpuFailures, elapsed, _lastGpu);
 
-                Publish(cpu: cpu, memory: memory, disk: disk, network: network, gpu: gpu, appendHistory: true);
+                Publish(cpu: cpu, memory: memory, disk: disk, network: network, gpu: gpu, appendHistory: true,
+                    updatedSources: MetricSources.Fast,
+                    unavailableSources: Unavailable(_cpuFailures, MetricSources.Cpu)
+                        | Unavailable(_memoryFailures, MetricSources.Memory)
+                        | Unavailable(_diskFailures, MetricSources.Disk)
+                        | Unavailable(_networkFailures, MetricSources.Network)
+                        | Unavailable(_gpuFailures, MetricSources.Gpu));
                 _fastLaneFailures.RecordSuccess();
             }
             catch (Exception ex) when (!IsCancellation(ex, token))
@@ -234,10 +243,9 @@ public sealed class MetricsHub : IAsyncDisposable
 
                 TimeSpan elapsed = stopwatch.Elapsed;
                 stopwatch.Restart();
-                last = Volatile.Read(ref _processSamplingEnabled) != 0
-                    ? SampleSafe(_processes, _processFailures, elapsed, last)
-                    : ProcessSnapshot.Empty;
-                Publish(processes: last);
+                bool enabled = Volatile.Read(ref _processSamplingEnabled) != 0;
+                if (enabled) last = SampleSafe(_processes, _processFailures, elapsed, last);
+                Publish(processes: enabled ? last : ProcessSnapshot.Empty, updatedSources: MetricSources.Processes, unavailableSources: Unavailable(_processFailures, MetricSources.Processes));
                 _processLaneFailures.RecordSuccess();
             }
             catch (Exception ex) when (!IsCancellation(ex, token))
@@ -262,7 +270,7 @@ public sealed class MetricsHub : IAsyncDisposable
                 TimeSpan elapsed = stopwatch.Elapsed;
                 stopwatch.Restart();
                 last = SampleSafe(_thermal, _thermalFailures, elapsed, last);
-                Publish(thermal: last);
+                Publish(thermal: last, updatedSources: MetricSources.Thermal, unavailableSources: Unavailable(_thermalFailures, MetricSources.Thermal));
                 _thermalLaneFailures.RecordSuccess();
             }
             catch (Exception ex) when (!IsCancellation(ex, token))
@@ -287,7 +295,7 @@ public sealed class MetricsHub : IAsyncDisposable
                 TimeSpan elapsed = stopwatch.Elapsed;
                 stopwatch.Restart();
                 last = SampleSafe(_volumes, _volumeFailures, elapsed, last);
-                Publish(volumes: last);
+                Publish(volumes: last, updatedSources: MetricSources.Volumes, unavailableSources: Unavailable(_volumeFailures, MetricSources.Volumes));
                 _volumeLaneFailures.RecordSuccess();
             }
             catch (Exception ex) when (!IsCancellation(ex, token))
@@ -311,11 +319,14 @@ public sealed class MetricsHub : IAsyncDisposable
         ProcessSnapshot? processes = null,
         ThermalSnapshot? thermal = null,
         IReadOnlyList<VolumeSnapshot>? volumes = null,
-        bool appendHistory = false)
+        bool appendHistory = false,
+        MetricSources updatedSources = MetricSources.None,
+        MetricSources unavailableSources = MetricSources.None)
     {
         MetricsSnapshot snapshot;
         lock (_snapshotLock)
         {
+            _unavailableSources = (_unavailableSources & ~updatedSources) | unavailableSources;
             _lastCpu = cpu ?? _lastCpu;
             _lastMemory = memory ?? _lastMemory;
             _lastDisk = disk ?? _lastDisk;
@@ -334,7 +345,7 @@ public sealed class MetricsHub : IAsyncDisposable
                 Gpu: _lastGpu,
                 Processes: _lastProcesses,
                 Thermal: _lastThermal,
-                Volumes: _lastVolumes);
+                Volumes: _lastVolumes) { UnavailableSources = _unavailableSources };
 
             _latest = snapshot;
             if (appendHistory)
@@ -361,6 +372,7 @@ public sealed class MetricsHub : IAsyncDisposable
         {
             if (!provider.IsAvailable)
             {
+                failures.RecordSuccess();
                 return fallback;
             }
 
@@ -374,6 +386,9 @@ public sealed class MetricsHub : IAsyncDisposable
             return fallback;
         }
     }
+
+    private static MetricSources Unavailable(FailureTracker failures, MetricSources source) =>
+        failures.IsUnavailable ? source : MetricSources.None;
 
     private void InitializeAll()
     {
@@ -475,7 +490,8 @@ public sealed class MetricsHub : IAsyncDisposable
             processes: snapshot.Processes,
             thermal: snapshot.Thermal,
             volumes: snapshot.Volumes,
-            appendHistory: appendHistory);
+            appendHistory: appendHistory,
+            updatedSources: MetricSources.All, unavailableSources: snapshot.UnavailableSources);
     }
 
     private static void DisposeProvider<T>(IMetricProvider<T> provider)
@@ -518,6 +534,11 @@ public sealed class MetricsHub : IAsyncDisposable
     {
         private readonly object _gate = new();
         private int _consecutiveFailures;
+
+        public bool IsUnavailable
+        {
+            get { lock (_gate) { return _consecutiveFailures >= UnavailableAfterConsecutiveFailures; } }
+        }
 
         public void RecordFailure(Exception exception)
         {

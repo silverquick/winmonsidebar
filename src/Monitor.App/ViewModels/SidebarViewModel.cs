@@ -28,6 +28,8 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
     private readonly Action<AppSettings> _saveSettings;
     private readonly int _topProcessCount;
     private bool _disposed;
+    private MetricSources _unavailableSources;
+    private bool IsUnavailable(MetricSources source) => (_unavailableSources & source) != 0;
     private DateTimeOffset _lastAppliedSnapshotTimestamp = DateTimeOffset.UnixEpoch;
     private IReadOnlyList<MemoryModuleInfo>? _lastMemoryModules;
     private IReadOnlyList<PageFileInfo>? _lastPageFiles;
@@ -124,6 +126,7 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
 
             if (value && _hub.Latest is MetricsSnapshot latest)
             {
+                UpdateAvailability(latest);
                 ApplyCpu(latest.Cpu, latest.Thermal);
             }
         }
@@ -144,6 +147,7 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
 
             if (value && _hub.Latest is MetricsSnapshot latest)
             {
+                UpdateAvailability(latest);
                 ApplyGpu(latest.Gpu);
             }
         }
@@ -164,6 +168,7 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
 
             if (value && _hub.Latest is MetricsSnapshot latest)
             {
+                UpdateAvailability(latest);
                 ApplyMemory(latest.Memory);
                 ApplyMemoryModules(latest.Memory);
                 _lastMemoryModules = latest.Memory.Modules;
@@ -189,6 +194,7 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
 
             if (value && _hub.Latest is MetricsSnapshot latest)
             {
+                UpdateAvailability(latest);
                 ApplyMemoryModules(latest.Memory);
                 _lastMemoryModules = latest.Memory.Modules;
             }
@@ -210,6 +216,7 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
 
             if (value && _hub.Latest is MetricsSnapshot latest)
             {
+                UpdateAvailability(latest);
                 ApplyStorage(latest.Disk, latest.Volumes, latest.Thermal);
             }
         }
@@ -230,6 +237,7 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
 
             if (value && _hub.Latest is MetricsSnapshot latest)
             {
+                UpdateAvailability(latest);
                 ApplyNetwork(latest.Network);
             }
         }
@@ -250,6 +258,7 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
 
             if (value && _hub.Latest is MetricsSnapshot latest)
             {
+                UpdateAvailability(latest);
                 int primaryIndex = FindPrimaryNicIndex(latest.Network.Interfaces);
                 UpdateNetworkAllRows(latest.Network.Interfaces, primaryIndex);
             }
@@ -271,6 +280,7 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
 
             if (value && _hub.Latest is MetricsSnapshot latest)
             {
+                UpdateAvailability(latest);
                 ApplyThermal(latest.Thermal);
                 _lastThermal = latest.Thermal;
             }
@@ -293,6 +303,7 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
 
             if (value)
             {
+                if (_hub.Latest is MetricsSnapshot latest) UpdateAvailability(latest);
                 IReadOnlyList<ProcessInfo> processes = _hub.Latest?.Processes.Processes ?? Array.Empty<ProcessInfo>();
                 UpdateProcesses(processes);
                 _lastProcesses = processes;
@@ -582,8 +593,20 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
         }
     }
 
+    private void UpdateAvailability(MetricsSnapshot s)
+    {
+        MetricSources changed = _unavailableSources ^ s.UnavailableSources;
+        _unavailableSources = s.UnavailableSources;
+        if ((changed & MetricSources.Memory) != 0) { _lastMemoryModules = null; _lastPageFiles = null; }
+        if ((changed & MetricSources.Thermal) != 0) _lastThermal = null;
+        if ((changed & MetricSources.Processes) != 0) _lastProcesses = null;
+        if ((changed & MetricSources.Processes) != 0)
+            ProcessSummary = IsUnavailable(MetricSources.Processes) ? "—" : string.Create(CultureInfo.InvariantCulture, $"上位 {_topProcessCount} 件");
+    }
+
     private void Apply(MetricsSnapshot s)
     {
+        UpdateAvailability(s);
         ApplyCpu(s.Cpu, s.Thermal);
         ApplyGpu(s.Gpu);
         ApplyMemory(s.Memory);
@@ -619,6 +642,15 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
 
     private void ApplyCpu(CpuSnapshot cpu, ThermalSnapshot thermal)
     {
+        if (IsUnavailable(MetricSources.Cpu))
+        {
+            CpuSummary = CpuModelText = CpuUsageText = CpuCurrentClockText = CpuCoreCountText = CpuTemperatureText = CpuPowerText = "—";
+            CpuGaugeValue = 0; CpuCoreValues = Array.Empty<double>(); CpuSparkline = Array.Empty<float>();
+            CpuTemperatureAlertLevel = CpuAlertLevel = AlertLevel.None;
+            return;
+        }
+
+        if (IsUnavailable(MetricSources.Thermal)) thermal = ThermalSnapshot.Empty;
         double effectiveClock = cpu.CurrentClockMhz > 0 ? cpu.CurrentClockMhz : cpu.BaseClockMhz;
 
         // CpuSnapshot.PackageTemperatureC/PackagePowerWatts は CpuProvider の範囲外で常に null。
@@ -667,6 +699,14 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
 
     private void ApplyGpu(GpuSnapshot gpu)
     {
+        if (IsUnavailable(MetricSources.Gpu))
+        {
+            GpuSummary = GpuAdapterNameText = GpuUsageText = GpuCoreClockText = GpuTemperatureHotspotText = GpuFanText = GpuPowerText = GpuMemoryClockText = GpuVramText = "—";
+            GpuGaugeValue = Gpu3DValue = GpuCopyValue = GpuVideoValue = GpuComputeValue = GpuVramGaugeValue = 0;
+            GpuSparkline = GpuTemperatureSparkline = Array.Empty<float>(); GpuTemperatureAlertLevel = GpuAlertLevel = AlertLevel.None;
+            return;
+        }
+
         GpuAdapterSnapshot adapter = gpu.Adapters.Count > 0 ? gpu.Adapters[0] : GpuAdapterSnapshot.Empty;
 
         // 警告レベル（見出しアクセントバー用）は折りたたみ中も常時更新
@@ -721,6 +761,14 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
 
     private void ApplyMemory(MemorySnapshot memory)
     {
+        if (IsUnavailable(MetricSources.Memory))
+        {
+            MemorySummary = MemoryUsageText = MemoryUsagePercentText = MemoryCachedText = MemoryStandbyText = MemoryModifiedText = MemoryFreeText = MemoryCompressedText = MemoryPoolText = MemorySystemCacheText = MemoryCommitText = MemoryCommitTooltipText = MemoryHandlesLine = MemoryHardwareReservedText = "—";
+            MemoryGaugeValue = MemoryCompressedBytes = 0; MemoryStackedValues = Array.Empty<double>(); MemorySparkline = Array.Empty<float>();
+            MemoryCommitAlertLevel = MemoryAlertLevel = AlertLevel.None;
+            return;
+        }
+
         // 警告レベル（見出しアクセントバー用）は折りたたみ中も常時更新
         MemoryCommitAlertLevel = AlertEvaluator.MemoryCommit(memory.CommittedBytes, memory.CommitLimitBytes);
         MemoryAlertLevel = MemoryCommitAlertLevel;
@@ -783,7 +831,7 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
 
     private void ApplyMemoryModules(MemorySnapshot memory)
     {
-        MemoryModulesSummary = memory.Modules.Count > 0
+        MemoryModulesSummary = !IsUnavailable(MetricSources.Memory) && memory.Modules.Count > 0
             ? string.Create(CultureInfo.InvariantCulture, $"{memory.Modules.Count} 本")
             : "—";
 
@@ -792,7 +840,7 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
             return;
         }
 
-        MemorySlotSummaryText = BuildSlotSummary(memory);
+        MemorySlotSummaryText = IsUnavailable(MetricSources.Memory) ? "—" : BuildSlotSummary(memory);
         MemoryModules = BuildMemoryModules(memory.Modules);
     }
 
@@ -813,7 +861,7 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
             $"{capacityGb:F0}GB {type}-{speed} × {memory.Modules.Count}  ({memory.SlotsUsed}/{memory.SlotsTotal} スロット)");
     }
 
-    private static IReadOnlyList<MemoryModuleRowViewModel> BuildMemoryModules(IReadOnlyList<MemoryModuleInfo> modules)
+    private IReadOnlyList<MemoryModuleRowViewModel> BuildMemoryModules(IReadOnlyList<MemoryModuleInfo> modules)
     {
         if (modules.Count == 0)
         {
@@ -823,13 +871,13 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
         var rows = new MemoryModuleRowViewModel[modules.Count];
         for (int i = 0; i < modules.Count; i++)
         {
-            rows[i] = new MemoryModuleRowViewModel(modules[i]);
+            rows[i] = new MemoryModuleRowViewModel(modules[i], IsUnavailable(MetricSources.Memory));
         }
 
         return rows;
     }
 
-    private static IReadOnlyList<PageFileRowViewModel> BuildPageFileRows(IReadOnlyList<PageFileInfo> pageFiles)
+    private IReadOnlyList<PageFileRowViewModel> BuildPageFileRows(IReadOnlyList<PageFileInfo> pageFiles)
     {
         if (pageFiles.Count == 0)
         {
@@ -839,7 +887,7 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
         var rows = new PageFileRowViewModel[pageFiles.Count];
         for (int i = 0; i < pageFiles.Count; i++)
         {
-            rows[i] = new PageFileRowViewModel(pageFiles[i]);
+            rows[i] = new PageFileRowViewModel(pageFiles[i], IsUnavailable(MetricSources.Memory));
         }
 
         return rows;
@@ -855,6 +903,7 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
     /// </summary>
     private void ApplyStorage(DiskSnapshot disk, IReadOnlyList<VolumeSnapshot> volumes, ThermalSnapshot thermal)
     {
+        if (IsUnavailable(MetricSources.Thermal)) thermal = ThermalSnapshot.Empty;
         ulong totalCapacityBytes = 0;
         ulong usedCapacityBytes = 0;
 
@@ -877,6 +926,8 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
             CultureInfo.InvariantCulture,
             $"{volumes.Count} ドライブ · {ByteFormatter.Percent(overallPercent)} · R {ShortRate(disk.TotalReadBytesPerSec)} W {ShortRate(disk.TotalWriteBytesPerSec)}");
 
+        if (IsUnavailable(MetricSources.Disk | MetricSources.Volumes)) StorageSummary = "—";
+
         if (!IsStorageExpanded)
         {
             // 折りたたみ中は行 VM やスパークラインを生成せず、警告レベルのみ判定して反映
@@ -890,8 +941,9 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
         DiskWriteLineText = string.Create(
             CultureInfo.InvariantCulture,
             $"W {ByteFormatter.BytesPerSec(disk.TotalWriteBytesPerSec)}");
-        DiskReadSparkline = _hub.History.Snapshot(MetricSeries.DiskReadBytesPerSec);
-        DiskWriteSparkline = _hub.History.Snapshot(MetricSeries.DiskWriteBytesPerSec);
+        if (IsUnavailable(MetricSources.Disk)) DiskReadLineText = DiskWriteLineText = "—";
+        DiskReadSparkline = IsUnavailable(MetricSources.Disk) ? Array.Empty<float>() : _hub.History.Snapshot(MetricSeries.DiskReadBytesPerSec);
+        DiskWriteSparkline = IsUnavailable(MetricSources.Disk) ? Array.Empty<float>() : _hub.History.Snapshot(MetricSeries.DiskWriteBytesPerSec);
 
         _diskNumbersBuffer.Clear();
         foreach (DiskDeviceSnapshot d in disk.Devices)
@@ -1030,11 +1082,12 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
         StorageAlertLevel = storageAlertLevel;
     }
 
-    private static AlertLevel EvaluateStorageAlertLevel(DiskSnapshot disk, IReadOnlyList<VolumeSnapshot> volumes, ThermalSnapshot thermal)
+    private AlertLevel EvaluateStorageAlertLevel(DiskSnapshot disk, IReadOnlyList<VolumeSnapshot> volumes, ThermalSnapshot thermal)
     {
         AlertLevel level = AlertLevel.None;
         foreach (DiskDeviceSnapshot d in disk.Devices)
         {
+            if (IsUnavailable(MetricSources.Disk)) continue;
             double? temperature = d.TemperatureC ?? FindStorageTemperature(thermal.StorageTemperatures, d.Model);
             level = MaxLevel(level, AlertEvaluator.DiskTemperature(temperature, d.WarningTemperatureC, d.CriticalTemperatureC, d.IsSsd));
             level = MaxLevel(level, d.BusyAlertLevel);
@@ -1048,10 +1101,12 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
         {
             if (v.Kind == VolumeKind.Network)
             {
+                if (IsUnavailable(MetricSources.Volumes)) continue;
                 level = MaxLevel(level, AlertEvaluator.NetworkDriveDisconnected(v.IsReady));
             }
             else if (v.IsReady && v.TotalBytes > 0)
             {
+                if (IsUnavailable(MetricSources.Volumes)) continue;
                 level = MaxLevel(level, AlertEvaluator.DriveCapacity(v.UsedPercent, v.FreeBytes));
             }
 
@@ -1069,8 +1124,9 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
         "#" + physicalDriveNumber.ToString(CultureInfo.InvariantCulture);
 
     /// <summary>物理ディスク見出し行1件分の値を計算し、既存の行インスタンスへ直接反映する。</summary>
-    private static void ApplyDiskRow(StorageRowViewModel row, DiskDeviceSnapshot d, ThermalSnapshot thermal)
+    private void ApplyDiskRow(StorageRowViewModel row, DiskDeviceSnapshot d, ThermalSnapshot thermal)
     {
+        if (IsUnavailable(MetricSources.Disk)) { row.MarkDiskUnavailable(); return; }
         string modelText = string.IsNullOrWhiteSpace(d.Model) ? $"Disk {d.PhysicalDriveNumber}" : d.Model;
         string busTypeText = string.IsNullOrEmpty(d.BusType) ? "" : d.BusType + (d.IsSsd ? " SSD" : " HDD");
         string readText = ShortRate(d.ReadBytesPerSec);
@@ -1094,8 +1150,9 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
     /// ネットワーク行は切断（<see cref="AlertEvaluator.NetworkDriveDisconnected"/>）。ローカルドライブは
     /// 空のカードリーダー等で IsReady=false になり得るため NetworkDriveDisconnected の対象にはしない
     /// （<see cref="AlertEvaluator.NetworkDriveDisconnected"/> のドキュメント参照）。</summary>
-    private static void ApplyVolumeRow(StorageRowViewModel row, VolumeSnapshot v, StorageRowKind kind)
+    private void ApplyVolumeRow(StorageRowViewModel row, VolumeSnapshot v, StorageRowKind kind)
     {
+        if (IsUnavailable(MetricSources.Volumes)) { row.MarkVolumeUnavailable(kind, v.IsReady && v.TotalBytes > 0); return; }
         string driveLetterText = v.DriveLetter;
         string labelText = kind == StorageRowKind.Network
             ? (v.NetworkPath ?? "")
@@ -1233,6 +1290,15 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
 
     private void ApplyNetwork(NetworkSnapshot network)
     {
+        if (IsUnavailable(MetricSources.Network))
+        {
+            NetworkSummary = NetworkAllSummary = NetworkNicName = NetworkDownText = NetworkUpText = "—";
+            NetworkDownSparkline = NetworkUpSparkline = Array.Empty<float>();
+            if (IsNetworkExpanded && IsNetworkAllExpanded)
+                UpdateNetworkAllRows(network.Interfaces, FindPrimaryNicIndex(network.Interfaces));
+            return;
+        }
+
         string downText = "↓ " + ByteFormatter.Bits(network.TotalReceiveBytesPerSec);
         string upText = "↑ " + ByteFormatter.Bits(network.TotalSendBytesPerSec);
         NetworkSummary = string.Create(CultureInfo.InvariantCulture, $"{downText} {upText}");
@@ -1280,6 +1346,7 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
 
     private void UpdateNetworkAllRows(IReadOnlyList<NetworkInterfaceSnapshot> interfaces, int primaryIndex)
     {
+
         // 副 NIC から外れた行（削除された NIC または主表示へ移った NIC）だけを削除する。
         for (int i = _networkAllRows.Count - 1; i >= 0; i--)
         {
@@ -1334,10 +1401,25 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
 
             desiredIndex++;
         }
+
+        if (IsUnavailable(MetricSources.Network))
+            foreach (var row in NetworkAllRows) row.MarkUnavailable();
     }
 
     private void ApplyThermal(ThermalSnapshot thermal)
     {
+        if (IsUnavailable(MetricSources.Thermal))
+        {
+            ThermalSummary = ThermalCpuPackageText = ThermalCpuPowerText = ThermalMotherboardText = ThermalVrmText = "—";
+            ThermalAlertLevel = AlertLevel.None;
+            IsThermalElevated = thermal.IsElevated;
+            IsThermalDataAvailable = thermal.IsAvailable;
+            // 保持しているセンサーの行数・表示条件は変えない。
+            ThermalCoreTemperatures = BuildSensorRows(thermal.CpuCoreTemperatures, _ => "—");
+            ThermalOtherTemperatures = BuildSensorRows(thermal.OtherTemperatures, _ => "—");
+            ThermalFans = BuildSensorRows(thermal.Fans, _ => "—");
+            return;
+        }
         ThermalAlertLevel = AlertEvaluator.CoolingFault(thermal.CpuPackageTemperatureC, thermal.MotherboardTemperatureC, thermal.Fans);
 
         if (!thermal.IsElevated)
@@ -1433,6 +1515,7 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
     /// </summary>
     private void UpdateProcesses(IReadOnlyList<ProcessInfo> processes)
     {
+
         int topCount = Math.Min(_topProcessCount, processes.Count);
 
         // 上位に残っていない既存行を削除する。
@@ -1485,6 +1568,8 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
                 }
             }
         }
+        if (IsUnavailable(MetricSources.Processes))
+            foreach (var row in Processes) row.MarkUnavailable();
     }
 
     private static string FormatClockOrDash(double? mhz) => mhz is double v && v > 0 ? ByteFormatter.Clock(v) : "—";

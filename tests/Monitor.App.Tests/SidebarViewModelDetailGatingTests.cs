@@ -11,6 +11,137 @@ namespace Monitor.App.Tests;
 [TestClass]
 public sealed class SidebarViewModelDetailGatingTests
 {
+    [STATestMethod]
+    public void Unavailable_IndependentStorageAndThermalSources_KeepHealthyReadings()
+    {
+        var hub = MetricsHub.CreateForTest();
+        var snapshot = CreateSampleSnapshot(cpuTemp: 110, diskTemp: 100, diskBusyAlertLevel: AlertLevel.Critical);
+        snapshot = snapshot with { Cpu = snapshot.Cpu with { PackageTemperatureC = null, PackagePowerWatts = null } };
+        hub.PublishSnapshotForTest(snapshot);
+        var settings = new AppSettings();
+        settings.ExpandedSections["cpu"] = settings.ExpandedSections["storage"] = true;
+        using var vm = new SidebarViewModel(hub, Dispatcher.CurrentDispatcher, settings, _ => { });
+        hub.PublishSnapshotForTest(snapshot with { UnavailableSources = MetricSources.Thermal });
+        vm.ApplyLatestSnapshot();
+        Assert.AreEqual("50%", vm.CpuUsageText);
+        Assert.AreEqual("—", vm.CpuTemperatureText);
+        Assert.AreEqual("—", vm.CpuPowerText);
+        Assert.AreEqual(AlertLevel.None, vm.CpuAlertLevel);
+        Assert.AreEqual(AlertLevel.Critical, vm.StorageAlertLevel, "Healthy disk temperatures still alert.");
+        hub.PublishSnapshotForTest(snapshot with { UnavailableSources = MetricSources.Disk });
+        vm.ApplyLatestSnapshot();
+        Assert.AreEqual("—", vm.StorageRows.First(r => r.Kind == StorageRowKind.Disk).ReadText);
+        Assert.AreNotEqual("—", vm.StorageRows.First(r => r.Kind == StorageRowKind.Volume).CapacityText);
+        Assert.AreEqual(AlertLevel.None, vm.StorageAlertLevel);
+        hub.PublishSnapshotForTest(snapshot with { UnavailableSources = MetricSources.Volumes });
+        vm.ApplyLatestSnapshot();
+        Assert.AreEqual(2, vm.StorageRows.Count, "Unavailable volumes keep their existing rows.");
+        Assert.AreEqual("—", vm.StorageRows.First(r => r.Kind == StorageRowKind.Volume).CapacityText);
+        Assert.AreNotEqual("—", vm.StorageRows.First(r => r.Kind == StorageRowKind.Disk).ReadText);
+        Assert.AreEqual(AlertLevel.Critical, vm.StorageAlertLevel);
+    }
+
+    [STATestMethod]
+    public void Unavailable_AllValuesAreDashes_AlertsClear_AndSameReferencesRecover()
+    {
+        var hub = MetricsHub.CreateForTest();
+        var healthy = CreateSampleSnapshot(cpuTemp: 110, gpuTemp: 110, gpuHotspot: 120,
+            committed: 20UL * 1024 * 1024 * 1024, diskBusyAlertLevel: AlertLevel.Critical,
+            diskTemp: 100, thermalCpu: 110, thermalMb: 90, fanRpm: 0);
+        hub.PublishSnapshotForTest(healthy);
+        var settings = new AppSettings();
+        foreach (string key in new[] { "cpu", "gpu", "memory", "memory-modules", "storage", "network", "network-all", "thermal", "process" })
+            settings.ExpandedSections[key] = true;
+        using var vm = new SidebarViewModel(hub, Dispatcher.CurrentDispatcher, settings, _ => { });
+        Assert.AreEqual(AlertLevel.Critical, vm.CpuAlertLevel);
+        int storageCount = vm.StorageRows.Count;
+        int processCount = vm.Processes.Count;
+        hub.PublishSnapshotForTest(healthy with { Timestamp = healthy.Timestamp.AddSeconds(1), UnavailableSources = MetricSources.All });
+        vm.ApplyLatestSnapshot();
+        foreach (var property in typeof(SidebarViewModel).GetProperties())
+        {
+            if (property.PropertyType == typeof(string) && property.Name != nameof(vm.HeaderTime))
+                Assert.AreEqual("—", property.GetValue(vm), property.Name);
+            if (property.PropertyType == typeof(AlertLevel))
+                Assert.AreEqual(AlertLevel.None, property.GetValue(vm), property.Name);
+        }
+        Assert.AreEqual(storageCount, vm.StorageRows.Count);
+        Assert.AreEqual(processCount, vm.Processes.Count);
+        Assert.AreEqual(0.0, vm.CpuGaugeValue);
+        Assert.AreEqual(0.0, vm.GpuGaugeValue);
+        Assert.AreEqual(0, vm.MemoryStackedValues.Count);
+        Assert.AreEqual(0, vm.CpuSparkline.Length);
+        Assert.IsTrue(vm.StorageRows.All(r => r.AlertLevel == AlertLevel.None));
+        Assert.IsTrue(vm.StorageRows.Where(r => r.Kind == StorageRowKind.Disk).All(r => r.ReadText == "—" && r.WriteText == "—" && r.TemperatureText == "—" && r.WriteHistory.Length == 0));
+        Assert.IsTrue(vm.StorageRows.Where(r => r.Kind != StorageRowKind.Disk).All(r => r.CapacityText == "—" && r.UsagePercentText == "—" && r.GaugeValue == 0));
+        Assert.IsTrue(vm.Processes.All(r => r.CpuText == "—" && r.MemoryText == "—"));
+        Assert.IsTrue(vm.NetworkAllRows.All(r => r.DownText == "—" && r.UpText == "—"));
+        Assert.AreEqual("—", vm.MemoryModules[0].CapacityText);
+        Assert.AreEqual("—", vm.PageFileRows[0].PercentText);
+        Assert.AreEqual(0.0, vm.PageFileRows[0].GaugeValue);
+        Assert.AreEqual("—", vm.ThermalFans[0].ValueText);
+
+        hub.PublishSnapshotForTest(healthy with { Timestamp = healthy.Timestamp.AddSeconds(2) });
+        vm.ApplyLatestSnapshot();
+        Assert.AreEqual("50%", vm.CpuUsageText);
+        Assert.AreEqual(AlertLevel.Critical, vm.CpuAlertLevel);
+        Assert.AreEqual("8GB", vm.MemoryModules[0].CapacityText);
+        Assert.AreNotEqual("—", vm.PageFileRows[0].PercentText);
+        Assert.AreNotEqual("—", vm.ThermalFans[0].ValueText);
+        Assert.AreNotEqual("—", vm.Processes[0].CpuText);
+        Assert.AreEqual(2, vm.StorageRows.First(r => r.Kind == StorageRowKind.Disk).WriteHistory.Length,
+            "Unavailable disk ticks must not append a held or fabricated reading.");
+    }
+
+    [STATestMethod]
+    public void Unavailable_WhileCollapsed_AlertsClear_ExpansionKeepsDashes()
+    {
+        var hub = MetricsHub.CreateForTest();
+        var snapshot = CreateSampleSnapshot(cpuTemp: 110, diskBusyAlertLevel: AlertLevel.Critical);
+        hub.PublishSnapshotForTest(snapshot);
+        var settings = new AppSettings();
+        foreach (string key in new[] { "cpu", "gpu", "memory", "storage", "network", "thermal", "process" })
+            settings.ExpandedSections[key] = false;
+        using var vm = new SidebarViewModel(hub, Dispatcher.CurrentDispatcher, settings, _ => { });
+        hub.PublishSnapshotForTest(snapshot with { Timestamp = snapshot.Timestamp.AddSeconds(1), UnavailableSources = MetricSources.All });
+        vm.ApplyLatestSnapshot();
+        Assert.AreEqual("—", vm.CpuSummary);
+        Assert.AreEqual("—", vm.StorageSummary);
+        Assert.AreEqual(AlertLevel.None, vm.CpuAlertLevel);
+        Assert.AreEqual(AlertLevel.None, vm.StorageAlertLevel);
+        vm.IsCpuExpanded = vm.IsGpuExpanded = vm.IsMemoryExpanded = vm.IsStorageExpanded = vm.IsNetworkExpanded = vm.IsThermalExpanded = true;
+        Assert.AreEqual("—", vm.CpuUsageText);
+        Assert.AreEqual("—", vm.GpuUsageText);
+        Assert.AreEqual("—", vm.MemoryUsageText);
+        Assert.AreEqual("—", vm.DiskReadLineText);
+        Assert.AreEqual("—", vm.NetworkDownText);
+        Assert.AreEqual("—", vm.ThermalCpuPackageText);
+    }
+
+    [STATestMethod]
+    public void Unsupported_EmptyProvidersKeepExistingPresentation()
+    {
+        var hub = MetricsHub.CreateForTest();
+        hub.PublishSnapshotForTest(MetricsSnapshot.Empty with { Timestamp = DateTimeOffset.UtcNow });
+        var settings = new AppSettings();
+        settings.ExpandedSections["gpu"] = settings.ExpandedSections["network"] = settings.ExpandedSections["thermal"] = true;
+        using var vm = new SidebarViewModel(hub, Dispatcher.CurrentDispatcher, settings, _ => { });
+        Assert.AreEqual("0%", vm.GpuUsageText);
+        Assert.AreEqual("GPU", vm.GpuAdapterNameText);
+        Assert.AreEqual("ネットワーク未接続", vm.NetworkNicName);
+        Assert.AreEqual("管理者権限が必要", vm.ThermalSummary);
+        Assert.IsFalse(vm.IsThermalElevated);
+        hub.PublishSnapshotForTest(MetricsSnapshot.Empty with
+        {
+            Timestamp = DateTimeOffset.UtcNow.AddSeconds(1),
+            Thermal = new ThermalSnapshot { IsElevated = true, IsAvailable = false },
+        });
+        vm.ApplyLatestSnapshot();
+        Assert.AreEqual("センサー無し", vm.ThermalSummary);
+        Assert.IsTrue(vm.IsThermalElevated);
+        Assert.IsFalse(vm.IsThermalDataAvailable);
+    }
+
     private static MetricsSnapshot CreateSampleSnapshot(
         double cpuUsage = 50.0,
         double cpuTemp = 60.0,
