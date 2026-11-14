@@ -24,11 +24,17 @@ public sealed partial class VolumeProvider : IMetricProvider<IReadOnlyList<Volum
     private CancellationTokenSource? _cts;
     private Task? _refreshTask;
     private DateTime _lastRefreshStartUtc = DateTime.MinValue;
+    private readonly object _cacheGate = new();
+    private bool _refreshFailed;
+    internal Func<string[]>? ReadDriveNamesForTest { get; set; }
+    internal Task RefreshForTest() => RefreshAsync(CancellationToken.None);
     private volatile IReadOnlyList<VolumeSnapshot> _cache = Array.Empty<VolumeSnapshot>();
 
     public string Name => "Volumes";
 
     public bool IsAvailable { get; private set; }
+
+    public bool LastSampleFailed { get; private set; }
 
     public void Initialize()
     {
@@ -44,7 +50,11 @@ public sealed partial class VolumeProvider : IMetricProvider<IReadOnlyList<Volum
     public IReadOnlyList<VolumeSnapshot> Sample(TimeSpan elapsed)
     {
         TriggerRefreshIfDue(force: false);
-        return _cache;
+        lock (_cacheGate)
+        {
+            LastSampleFailed = _refreshFailed;
+            return _cache;
+        }
     }
 
     public void Dispose()
@@ -106,24 +116,49 @@ public sealed partial class VolumeProvider : IMetricProvider<IReadOnlyList<Volum
         _refreshTask = Task.Run(() => RefreshAsync(token), token);
     }
 
+    private void PublishCache(IReadOnlyList<VolumeSnapshot> cache, bool refreshSucceeded)
+    {
+        lock (_cacheGate)
+        {
+            _cache = cache;
+            if (refreshSucceeded) _refreshFailed = false;
+        }
+    }
+
+    private async Task RefreshAsync(CancellationToken token)
+    {
+        try
+        {
+            await RefreshCoreAsync(token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch
+        {
+            lock (_cacheGate) _refreshFailed = true;
+        }
+    }
+
     /// <summary>Enumerates every logical drive and queries each one's capacity/label/network-path/
     /// physical-disk-number in parallel, publishing each drive's result into <see cref="_cache"/> as
     /// soon as it resolves (rather than waiting for the slowest one) so one unresponsive network drive
     /// does not delay every other drive's data from showing up.</summary>
-    private async Task RefreshAsync(CancellationToken token)
+    private async Task RefreshCoreAsync(CancellationToken token)
     {
         string[] driveNames;
         try
         {
-            driveNames = DriveInfo.GetDrives().Select(d => d.Name).ToArray();
+            driveNames = ReadDriveNamesForTest?.Invoke() ?? DriveInfo.GetDrives().Select(d => d.Name).ToArray();
         }
         catch
         {
+            lock (_cacheGate) _refreshFailed = true;
             return; // keep whatever was cached before
         }
 
-        if (driveNames.Length == 0 || token.IsCancellationRequested)
+        if (token.IsCancellationRequested) return;
+        if (driveNames.Length == 0)
         {
+            PublishCache(Array.Empty<VolumeSnapshot>(), refreshSucceeded: true);
             return;
         }
 
@@ -133,6 +168,7 @@ public sealed partial class VolumeProvider : IMetricProvider<IReadOnlyList<Volum
             working[existing.DriveLetter] = existing;
         }
 
+        bool refreshSucceeded = true;
         var pending = new List<Task<VolumeSnapshot>>(driveNames.Length);
         DateTime lastPublishUtc = DateTime.MinValue;
         foreach (string driveName in driveNames)
@@ -156,17 +192,19 @@ public sealed partial class VolumeProvider : IMetricProvider<IReadOnlyList<Volum
                 working[snapshot.DriveLetter] = snapshot;
                 if (DateTime.UtcNow - lastPublishUtc >= TimeSpan.FromMilliseconds(500))
                 {
-                    _cache = working.Values.OrderBy(v => v.DriveLetter, StringComparer.Ordinal).ToArray();
+                    PublishCache(working.Values.OrderBy(v => v.DriveLetter, StringComparer.Ordinal).ToArray(), refreshSucceeded: false);
                     lastPublishUtc = DateTime.UtcNow;
                 }
             }
             catch
             {
+                refreshSucceeded = false;
+                lock (_cacheGate) _refreshFailed = true;
                 // ReadVolumeSafe never throws, but guard defensively; skip this drive for this round.
             }
         }
 
-        _cache = working.Values.OrderBy(v => v.DriveLetter, StringComparer.Ordinal).ToArray();
+        PublishCache(working.Values.OrderBy(v => v.DriveLetter, StringComparer.Ordinal).ToArray(), refreshSucceeded);
     }
 
     /// <summary>Reads everything for one drive letter. Every failure path returns a non-null snapshot

@@ -62,20 +62,28 @@ public sealed class MemoryProvider : IMetricProvider<MemorySnapshot>
 
     public string Name => "Memory";
 
-    /// <summary>物理メモリ取得は GlobalMemoryStatusEx のみに依存するため、Initialize が失敗しない限り常に true。</summary>
+    /// <summary>物理メモリ取得 API の対応状態。一時的な取得失敗では無効化しない。</summary>
     public bool IsAvailable { get; private set; }
+
+    public bool LastSampleFailed { get; private set; }
 
     public void Initialize()
     {
         try
         {
-            // 物理メモリが取得できるかどうかで可用性を判定する。取れなければこのプロバイダは無意味。
+            // 初期取得の一時失敗でも Sample で再試行できるようにする。
             MEMORYSTATUSEX status = MEMORYSTATUSEX.Create();
-            IsAvailable = Kernel32.GlobalMemoryStatusEx(ref status);
+            LastSampleFailed = !Kernel32.GlobalMemoryStatusEx(ref status);
+            IsAvailable = true;
+        }
+        catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException)
+        {
+            IsAvailable = false;
         }
         catch
         {
-            IsAvailable = false;
+            LastSampleFailed = true;
+            IsAvailable = true;
         }
 
         // PDH によるコミット量・内訳の取得はベストエフォート。失敗してもフォールバックがあるので
@@ -143,11 +151,13 @@ public sealed class MemoryProvider : IMetricProvider<MemorySnapshot>
             return MemorySnapshot.Empty;
         }
 
+        LastSampleFailed = false;
         try
         {
             MEMORYSTATUSEX status = MEMORYSTATUSEX.Create();
             if (!Kernel32.GlobalMemoryStatusEx(ref status))
             {
+                LastSampleFailed = true;
                 return MemorySnapshot.Empty;
             }
 
@@ -156,7 +166,14 @@ public sealed class MemoryProvider : IMetricProvider<MemorySnapshot>
             ulong used = total > available ? total - available : 0;
             double usedPercent = total > 0 ? (double)used / total * 100.0 : 0.0;
 
-            _pdhQuery?.Collect();
+            // カウンターが全て非対応の場合は、従来どおり Win32 の概要値を使う。
+            if (_pdhQuery?.Collect() == false &&
+                (_committedBytesCounter is not null || _commitLimitCounter is not null || _cacheBytesCounter is not null ||
+                 _poolPagedCounter is not null || _poolNonPagedCounter is not null || _modifiedPageListCounter is not null ||
+                 _freeZeroPageListCounter is not null || _standbyCoreCounter is not null || _standbyNormalCounter is not null ||
+                 _standbyReserveCounter is not null || _pagingFileUsagePercentTotalCounter is not null ||
+                 _pagingFileUsageMultiCounter is not null || _pagingFileUsagePeakMultiCounter is not null))
+                LastSampleFailed = true;
 
             ulong committed = ReadCounterUlongOrZero(_committedBytesCounter, out bool committedOk);
             ulong commitLimit = ReadCounterUlongOrZero(_commitLimitCounter, out bool limitOk);
@@ -240,6 +257,7 @@ public sealed class MemoryProvider : IMetricProvider<MemorySnapshot>
         }
         catch
         {
+            LastSampleFailed = true;
             return MemorySnapshot.Empty;
         }
     }

@@ -49,6 +49,8 @@ public sealed class GpuProvider : IMetricProvider<GpuSnapshot>
 
     public bool IsAvailable { get; private set; }
 
+    public bool LastSampleFailed { get; private set; }
+
     public void Initialize()
     {
         if (_disposed)
@@ -114,9 +116,14 @@ public sealed class GpuProvider : IMetricProvider<GpuSnapshot>
             return GpuSnapshot.Empty;
         }
 
+        LastSampleFailed = false;
         try
         {
-            _query.Collect();
+            if (!_query.Collect())
+            {
+                LastSampleFailed = true;
+                return GpuSnapshot.Empty;
+            }
 
             // 前回サンプルの値を持ち越さないよう、既知アダプタの集計値をこのサンプルの先頭で
             // 全てゼロへ戻す（Dictionary/AdapterAccumulator インスタンス自体は使い回す）。
@@ -234,6 +241,7 @@ public sealed class GpuProvider : IMetricProvider<GpuSnapshot>
         }
         catch
         {
+            LastSampleFailed = true;
             return GpuSnapshot.Empty;
         }
     }

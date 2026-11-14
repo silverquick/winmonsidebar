@@ -45,6 +45,7 @@ public sealed class GaugeBar : FrameworkElement, IAnimatableControl
     private double _current;
     private double _target;
     private bool _hasTarget;
+    private bool _isUnavailable;
     private bool _isComplete = true;
 
     public GaugeBar()
@@ -54,7 +55,7 @@ public sealed class GaugeBar : FrameworkElement, IAnimatableControl
         IsVisibleChanged += OnIsVisibleChanged;
     }
 
-    /// <summary>入力の生値（0〜100%）。</summary>
+    /// <summary>入力の生値（0〜100%）。NaN は取得不能（トラックのみ即時表示）。</summary>
     public double Value
     {
         get => (double)GetValue(ValueProperty);
@@ -91,11 +92,24 @@ public sealed class GaugeBar : FrameworkElement, IAnimatableControl
         if (d is GaugeBar bar)
         {
             double raw = (double)e.NewValue;
+            if (double.IsNaN(raw))
+            {
+                bar._isUnavailable = true;
+                bar._current = bar._target = 0;
+                bar._isComplete = true;
+                FrameAnimationClock.Unregister(bar);
+                bar.UpdateClipRect();
+                bar.InvalidateVisual();
+                return;
+            }
+
+            bool recovered = bar._isUnavailable;
+            bar._isUnavailable = false;
             double sanitized = double.IsFinite(raw) ? Math.Clamp(raw, 0.0, 100.0) : (bar._hasTarget ? bar._target : 0.0);
             bar._target = sanitized;
             bar._hasTarget = true;
 
-            if (!bar.IsLoaded || !bar.IsVisible || bar.SmoothingTime <= TimeSpan.Zero)
+            if (recovered || !bar.IsLoaded || !bar.IsVisible || bar.SmoothingTime <= TimeSpan.Zero)
             {
                 bar._current = sanitized;
                 bar._isComplete = true;
@@ -177,7 +191,7 @@ public sealed class GaugeBar : FrameworkElement, IAnimatableControl
     {
         double width = RenderSize.Width;
         double height = RenderSize.Height;
-        if (width <= 0 || height <= 0)
+        if (_isUnavailable || width <= 0 || height <= 0)
         {
             _clipGeometry.Rect = Rect.Empty;
             return;

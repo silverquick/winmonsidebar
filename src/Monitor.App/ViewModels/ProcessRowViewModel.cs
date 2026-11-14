@@ -44,8 +44,9 @@ public sealed class ProcessRowViewModel : INotifyPropertyChanged
 
     public void MarkUnavailable() => Name = CpuText = MemoryText = "—";
 
-    public void Update(ProcessInfo info)
+    public void Update(ProcessInfo info, bool unavailable = false)
     {
+        if (unavailable) { MarkUnavailable(); return; }
         Name = string.IsNullOrEmpty(info.Name) ? $"PID {info.Pid}" : info.Name;
         CpuText = $"{info.CpuPercent:F1}%";
         MemoryText = ByteFormatter.Bytes(info.WorkingSetBytes);

@@ -43,6 +43,8 @@ public sealed partial class CpuProvider : IMetricProvider<CpuSnapshot>, IDetailS
 
     public bool IsAvailable { get; private set; }
 
+    public bool LastSampleFailed { get; private set; }
+
     public void SetDetailSamplingEnabled(bool enabled) =>
         Volatile.Write(ref _detailSamplingEnabled, enabled ? 1 : 0);
 
@@ -69,7 +71,8 @@ public sealed partial class CpuProvider : IMetricProvider<CpuSnapshot>, IDetailS
         }
         catch
         {
-            IsAvailable = false;
+            LastSampleFailed = true;
+            IsAvailable = true;
         }
     }
 
@@ -80,6 +83,7 @@ public sealed partial class CpuProvider : IMetricProvider<CpuSnapshot>, IDetailS
             return CpuSnapshot.Empty;
         }
 
+        LastSampleFailed = false;
         try
         {
             double totalUsagePercent = SampleTotalUsagePercent();
@@ -94,7 +98,9 @@ public sealed partial class CpuProvider : IMetricProvider<CpuSnapshot>, IDetailS
             else
             {
                 // 現在クロックの単一カウンターを更新するためだけに1回 Collect する。
-                _pdhQuery?.Collect();
+                if (_pdhQuery?.Collect() == false &&
+                    (_performancePercentCounter is not null || _perCoreCounter is not null || _perCoreClockCounter is not null))
+                    LastSampleFailed = true;
                 perCoreUsagePercent = Array.Empty<double>();
                 perCoreClockMhz = Array.Empty<double>();
             }
@@ -116,6 +122,7 @@ public sealed partial class CpuProvider : IMetricProvider<CpuSnapshot>, IDetailS
         }
         catch
         {
+            LastSampleFailed = true;
             return CpuSnapshot.Empty;
         }
     }
@@ -126,6 +133,7 @@ public sealed partial class CpuProvider : IMetricProvider<CpuSnapshot>, IDetailS
         {
             if (!Kernel32.GetSystemTimes(out FILETIME idleFt, out FILETIME kernelFt, out FILETIME userFt))
             {
+                LastSampleFailed = true;
                 return 0.0;
             }
 
@@ -157,6 +165,7 @@ public sealed partial class CpuProvider : IMetricProvider<CpuSnapshot>, IDetailS
         }
         catch
         {
+            LastSampleFailed = true;
             return 0.0;
         }
     }
@@ -170,7 +179,7 @@ public sealed partial class CpuProvider : IMetricProvider<CpuSnapshot>, IDetailS
 
         try
         {
-            _pdhQuery.Collect();
+            if (!_pdhQuery.Collect()) LastSampleFailed = true;
 
             _coreBuffer.Clear();
             foreach (PdhItemSpan item in _perCoreCounter.Enumerate())
@@ -197,6 +206,7 @@ public sealed partial class CpuProvider : IMetricProvider<CpuSnapshot>, IDetailS
         }
         catch
         {
+            LastSampleFailed = true;
             return Array.Empty<double>();
         }
     }
@@ -238,6 +248,7 @@ public sealed partial class CpuProvider : IMetricProvider<CpuSnapshot>, IDetailS
         }
         catch
         {
+            LastSampleFailed = true;
             return Array.Empty<double>();
         }
     }
@@ -261,6 +272,7 @@ public sealed partial class CpuProvider : IMetricProvider<CpuSnapshot>, IDetailS
         }
         catch
         {
+            LastSampleFailed = true;
             return _baseClockMhz;
         }
     }

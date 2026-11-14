@@ -56,6 +56,8 @@ public sealed class DiskProvider : IMetricProvider<DiskSnapshot>
 
     public bool IsAvailable { get; private set; }
 
+    public bool LastSampleFailed { get; private set; }
+
     public DiskProvider() : this(
         StorageApi.EnumeratePhysicalDisks,
         StorageApi.EnumerateFixedVolumesWithDiskMapping,
@@ -125,6 +127,7 @@ public sealed class DiskProvider : IMetricProvider<DiskSnapshot>
             return DiskSnapshot.Empty;
         }
 
+        LastSampleFailed = false;
         try
         {
             if (DateTime.UtcNow - _lastStaticRefreshUtc >= StaticInfoRefreshInterval)
@@ -209,6 +212,7 @@ public sealed class DiskProvider : IMetricProvider<DiskSnapshot>
         }
         catch
         {
+            LastSampleFailed = true;
             return DiskSnapshot.Empty;
         }
     }
@@ -364,7 +368,11 @@ public sealed class DiskProvider : IMetricProvider<DiskSnapshot>
             return (byDrive, null);
         }
 
-        _query.Collect();
+        if (!_query.Collect())
+        {
+            LastSampleFailed = true;
+            return (byDrive, null);
+        }
 
         Dictionary<int, DiskRateAccumulator> accumulators = _rateAccumulatorsBuffer;
         accumulators.Clear();

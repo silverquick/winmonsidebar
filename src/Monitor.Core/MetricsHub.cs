@@ -54,6 +54,8 @@ public sealed class MetricsHub : IAsyncDisposable
     private readonly IDetailSamplingProvider? _cpuDetails;
     private readonly object _snapshotLock = new();
     private readonly DiskBusyAlertTracker _diskAlertTracker = new();
+    private TimeSpan _diskElapsedSinceSuccess;
+    private DiskSnapshot _lastSuccessfulDisk = DiskSnapshot.Empty;
     private CpuSnapshot _lastCpu = CpuSnapshot.Empty;
     private MemorySnapshot _lastMemory = MemorySnapshot.Empty;
     private DiskSnapshot _lastDisk = DiskSnapshot.Empty;
@@ -190,8 +192,7 @@ public sealed class MetricsHub : IAsyncDisposable
 
                 CpuSnapshot cpu = SampleSafe(_cpu, _cpuFailures, elapsed, _lastCpu);
                 MemorySnapshot memory = SampleSafe(_memory, _memoryFailures, elapsed, _lastMemory);
-                DiskSnapshot rawDisk = SampleSafe(_disk, _diskFailures, elapsed, _lastDisk);
-                DiskSnapshot disk = _diskFailures.IsUnavailable ? rawDisk : UpdateDiskAlertsSafe(rawDisk, elapsed);
+                DiskSnapshot disk = SampleDisk(elapsed);
                 NetworkSnapshot network = SampleSafe(_network, _networkFailures, elapsed, _lastNetwork);
                 GpuSnapshot gpu = SampleSafe(_gpu, _gpuFailures, elapsed, _lastGpu);
 
@@ -212,8 +213,21 @@ public sealed class MetricsHub : IAsyncDisposable
     }
 
     /// <summary>
-    /// 高 Busy 継続警告を付与する。失敗しても fast レーンの公開を止めないよう、警告なしの生値で代用する。
+    /// 取得成功時だけ高 Busy 警告を更新する。失敗時は前回の装飾済みスナップショットを保持する。
     /// </summary>
+    internal DiskSnapshot SampleDisk(TimeSpan elapsed)
+    {
+        _diskElapsedSinceSuccess += elapsed;
+        DiskSnapshot raw = SampleSafe(_disk, _diskFailures, elapsed, _lastSuccessfulDisk);
+        if (_diskFailures.HasFailures) return _lastSuccessfulDisk;
+
+        // 失敗中は警告の時計を進めず、成功時には実際の取得間隔を渡す。
+        _lastSuccessfulDisk = UpdateDiskAlertsSafe(raw, _diskElapsedSinceSuccess);
+        _diskElapsedSinceSuccess = TimeSpan.Zero;
+        return _lastSuccessfulDisk;
+    }
+
+    /// <summary>警告トラッカー自身の失敗では、警告なしの生値で公開を続ける。</summary>
     private DiskSnapshot UpdateDiskAlertsSafe(DiskSnapshot rawDisk, TimeSpan elapsed)
     {
         try
@@ -377,6 +391,11 @@ public sealed class MetricsHub : IAsyncDisposable
             }
 
             T value = provider.Sample(elapsed);
+            if (provider.LastSampleFailed)
+            {
+                failures.RecordFailure();
+                return fallback;
+            }
             failures.RecordSuccess();
             return value;
         }
@@ -535,12 +554,17 @@ public sealed class MetricsHub : IAsyncDisposable
         private readonly object _gate = new();
         private int _consecutiveFailures;
 
+        public bool HasFailures
+        {
+            get { lock (_gate) { return _consecutiveFailures > 0; } }
+        }
+
         public bool IsUnavailable
         {
             get { lock (_gate) { return _consecutiveFailures >= UnavailableAfterConsecutiveFailures; } }
         }
 
-        public void RecordFailure(Exception exception)
+        public void RecordFailure(Exception? exception = null)
         {
             bool isFirst;
             lock (_gate)
@@ -550,7 +574,9 @@ public sealed class MetricsHub : IAsyncDisposable
 
             if (isFirst)
             {
-                log($"MetricsHub: {subject} で例外が発生しました（回復するまで以降の同種の失敗は記録しません）", exception);
+                log(exception is null
+                    ? $"MetricsHub: {subject} が取得失敗を通知しました（既定値・キャッシュへ退避、回復するまで以降の同種の失敗は記録しません）"
+                    : $"MetricsHub: {subject} で例外が発生しました（回復するまで以降の同種の失敗は記録しません）", exception);
             }
         }
 

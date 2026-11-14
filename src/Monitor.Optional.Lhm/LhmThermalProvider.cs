@@ -34,6 +34,8 @@ public sealed class LhmThermalProvider : IThermalProvider
 
     public bool IsAvailable { get; private set; }
 
+    public bool LastSampleFailed { get; private set; }
+
     public void Initialize()
     {
         try
@@ -89,6 +91,7 @@ public sealed class LhmThermalProvider : IThermalProvider
 
     public ThermalSnapshot Sample(TimeSpan elapsed)
     {
+        LastSampleFailed = false;
         if (!IsAvailable || _computer is null)
         {
             return ThermalSnapshot.Empty with { IsElevated = _isElevated, Source = "none" };
@@ -142,6 +145,7 @@ public sealed class LhmThermalProvider : IThermalProvider
         }
         catch
         {
+            LastSampleFailed = true;
             return ThermalSnapshot.Empty with { IsElevated = _isElevated, Source = "none" };
         }
     }

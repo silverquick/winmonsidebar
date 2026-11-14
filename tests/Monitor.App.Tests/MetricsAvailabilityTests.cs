@@ -14,16 +14,20 @@ public sealed class MetricsAvailabilityTests
     [DataRow("thermal", MetricSources.Thermal)]
     [DataRow("process", MetricSources.Processes)]
     [DataRow("volume", MetricSources.Volumes)]
-    public async Task FailedSamples_HoldTwoThenUnavailableAndRecover(string lane, MetricSources sources)
+    [DataRow("fast", MetricSources.Fast, true)]
+    [DataRow("thermal", MetricSources.Thermal, true)]
+    [DataRow("process", MetricSources.Processes, true)]
+    [DataRow("volume", MetricSources.Volumes, true)]
+    public async Task FailedSamples_HoldTwoThenUnavailableAndRecover(string lane, MetricSources sources, bool signalFailure = false)
     {
-        var cpu = new ScriptedProvider<CpuSnapshot>(new() { TotalUsagePercent = 42 });
-        var memory = new ScriptedProvider<MemorySnapshot>(new() { UsedPercent = 57 });
-        var disk = new ScriptedProvider<DiskSnapshot>(new() { TotalReadBytesPerSec = 123 });
-        var network = new ScriptedProvider<NetworkSnapshot>(new([], 456, 789));
-        var gpu = new ScriptedProvider<GpuSnapshot>(new() { TotalUsagePercent = 23 });
-        var process = new ScriptedProvider<ProcessSnapshot>(new() { Processes = [new(1, "test", 12, 345)] });
-        var thermal = new ScriptedThermalProvider(new() { IsAvailable = true, IsElevated = true, CpuPackageTemperatureC = 67 });
-        var volumes = new ScriptedProvider<IReadOnlyList<VolumeSnapshot>>([new() { DriveLetter = "C:", TotalBytes = 100 }]);
+        var cpu = new ScriptedProvider<CpuSnapshot>(new() { TotalUsagePercent = 42 }, signalFailure, CpuSnapshot.Empty);
+        var memory = new ScriptedProvider<MemorySnapshot>(new() { UsedPercent = 57 }, signalFailure, MemorySnapshot.Empty);
+        var disk = new ScriptedProvider<DiskSnapshot>(new() { TotalReadBytesPerSec = 123 }, signalFailure, DiskSnapshot.Empty);
+        var network = new ScriptedProvider<NetworkSnapshot>(new([], 456, 789), signalFailure, NetworkSnapshot.Empty);
+        var gpu = new ScriptedProvider<GpuSnapshot>(new() { TotalUsagePercent = 23 }, signalFailure, GpuSnapshot.Empty);
+        var process = new ScriptedProvider<ProcessSnapshot>(new() { Processes = [new(1, "test", 12, 345)] }, signalFailure, ProcessSnapshot.Empty);
+        var thermal = new ScriptedThermalProvider(new() { IsAvailable = true, IsElevated = true, CpuPackageTemperatureC = 67 }, signalFailure);
+        var volumes = new ScriptedProvider<IReadOnlyList<VolumeSnapshot>>([new() { DriveLetter = "C:", TotalBytes = 100 }], signalFailure, []);
         TimeSpan Interval(string name) => lane == name ? TimeSpan.FromMilliseconds(5) : TimeSpan.FromHours(1);
         var hub = new MetricsHub(new()
         {
@@ -78,19 +82,24 @@ public sealed class MetricsAvailabilityTests
         Assert.AreEqual(2, history.Snapshot(MetricSeries.GpuTotal).Length);
     }
 
-    private class ScriptedProvider<T>(T value) : IMetricProvider<T>
+    private class ScriptedProvider<T>(T value, bool signalFailure = false, T fallback = default!) : IMetricProvider<T>
     {
         private int _samples;
         public T Value { get; } = value;
         public string Name => "Scripted";
         public bool IsAvailable => true;
+        public bool LastSampleFailed { get; private set; }
         public void Initialize() { }
-        public T Sample(TimeSpan elapsed) => ++_samples is >= 2 and <= 5
-            ? throw new InvalidOperationException("sample failure") : Value;
+        public T Sample(TimeSpan elapsed)
+        {
+            LastSampleFailed = ++_samples is >= 2 and <= 5;
+            if (!LastSampleFailed) return Value;
+            return signalFailure ? fallback : throw new InvalidOperationException("sample failure");
+        }
         public void Dispose() { }
     }
 
-    private sealed class ScriptedThermalProvider(ThermalSnapshot value) : ScriptedProvider<ThermalSnapshot>(value), IThermalProvider
+    private sealed class ScriptedThermalProvider(ThermalSnapshot value, bool signalFailure) : ScriptedProvider<ThermalSnapshot>(value, signalFailure, ThermalSnapshot.Empty), IThermalProvider
     {
         public bool RequiresElevation => false;
     }

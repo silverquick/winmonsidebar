@@ -69,6 +69,8 @@ public sealed partial class ProcessProvider : IMetricProvider<ProcessSnapshot>
 
     public bool IsAvailable { get; private set; }
 
+    public bool LastSampleFailed { get; private set; }
+
     public void Initialize()
     {
         try
@@ -79,7 +81,8 @@ public sealed partial class ProcessProvider : IMetricProvider<ProcessSnapshot>
         }
         catch
         {
-            IsAvailable = false;
+            LastSampleFailed = true;
+            IsAvailable = true;
         }
     }
 
@@ -90,12 +93,14 @@ public sealed partial class ProcessProvider : IMetricProvider<ProcessSnapshot>
             return ProcessSnapshot.Empty;
         }
 
+        LastSampleFailed = false;
         try
         {
             return SampleCore(elapsed);
         }
         catch
         {
+            LastSampleFailed = true;
             return ProcessSnapshot.Empty;
         }
     }

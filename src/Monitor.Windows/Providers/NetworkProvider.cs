@@ -10,6 +10,12 @@ namespace Monitor.Windows.Providers;
 /// </summary>
 public sealed class NetworkProvider : IMetricProvider<NetworkSnapshot>
 {
+    private readonly Func<List<MIB_IF_ROW2>, bool> _readInterfaceTable;
+
+    public NetworkProvider() : this(IpHlpApi.ReadInterfaceTable) { }
+
+    internal NetworkProvider(Func<List<MIB_IF_ROW2>, bool> readInterfaceTable) => _readInterfaceTable = readInterfaceTable;
+
     private readonly Dictionary<ulong, (ulong In, ulong Out)> _previous = new();
     private readonly List<MIB_IF_ROW2> _interfaceRowsBuffer = new();
     private readonly HashSet<ulong> _seenLuidsBuffer = new();
@@ -22,22 +28,31 @@ public sealed class NetworkProvider : IMetricProvider<NetworkSnapshot>
 
     public bool IsAvailable { get; private set; }
 
+    public bool LastSampleFailed { get; private set; }
+
     public void Initialize()
     {
         try
         {
             // GetIfTable2 が使えるかどうかを軽く確認しておく。失敗してもここで例外は外に漏らさない。
-            IpHlpApi.ReadInterfaceTable(_interfaceRowsBuffer);
+            LastSampleFailed = !_readInterfaceTable(_interfaceRowsBuffer);
             IsAvailable = true;
+        }
+        catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException)
+        {
+            IsAvailable = false;
         }
         catch
         {
-            IsAvailable = false;
+            // API は存在する。初期取得の一時的な失敗でも毎 tick 再試行する。
+            IsAvailable = true;
+            LastSampleFailed = true;
         }
     }
 
     public NetworkSnapshot Sample(TimeSpan elapsed)
     {
+        LastSampleFailed = false;
         if (!IsAvailable)
         {
             return NetworkSnapshot.Empty;
@@ -45,7 +60,12 @@ public sealed class NetworkProvider : IMetricProvider<NetworkSnapshot>
 
         try
         {
-            IpHlpApi.ReadInterfaceTable(_interfaceRowsBuffer);
+            if (!_readInterfaceTable(_interfaceRowsBuffer))
+            {
+                LastSampleFailed = true;
+                _previous.Clear();
+                return NetworkSnapshot.Empty;
+            }
             IReadOnlyList<MIB_IF_ROW2> rows = _interfaceRowsBuffer;
             if (rows.Count == 0)
             {
@@ -162,7 +182,9 @@ public sealed class NetworkProvider : IMetricProvider<NetworkSnapshot>
         }
         catch
         {
-            IsAvailable = false;
+            LastSampleFailed = true;
+            // 次の成功は新しい基準値にする。失敗期間の累積バイトを 1 tick 分と誤認しない。
+            _previous.Clear();
             return NetworkSnapshot.Empty;
         }
     }

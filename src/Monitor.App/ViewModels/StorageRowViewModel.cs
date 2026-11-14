@@ -148,7 +148,7 @@ public sealed class StorageRowViewModel : INotifyPropertyChanged
         HasCapacity = hasCapacity;
         IsNetwork = kind == StorageRowKind.Network;
         DriveLetterText = LabelText = UsagePercentText = CapacityText = TooltipText = "—";
-        GaugeValue = 0;
+        GaugeValue = double.NaN;
         AlertLevel = BusyAlertLevel = TemperatureAlertLevel = AlertLevel.None;
     }
 

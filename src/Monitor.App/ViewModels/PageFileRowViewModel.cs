@@ -9,7 +9,7 @@ public sealed class PageFileRowViewModel
 {
     public PageFileRowViewModel(PageFileInfo p, bool unavailable = false)
     {
-        if (unavailable) { PathText = PercentText = UsageText = PeakText = "—"; return; }
+        if (unavailable) { GaugeValue = double.NaN; PathText = PercentText = UsageText = PeakText = "—"; return; }
         PathText = string.IsNullOrWhiteSpace(p.Path) ? "—" : p.Path;
         PercentText = ByteFormatter.Percent(p.UsagePercent);
         GaugeValue = Math.Clamp(p.UsagePercent, 0.0, 100.0);

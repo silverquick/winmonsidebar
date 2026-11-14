@@ -645,7 +645,7 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
         if (IsUnavailable(MetricSources.Cpu))
         {
             CpuSummary = CpuModelText = CpuUsageText = CpuCurrentClockText = CpuCoreCountText = CpuTemperatureText = CpuPowerText = "—";
-            CpuGaugeValue = 0; CpuCoreValues = Array.Empty<double>(); CpuSparkline = Array.Empty<float>();
+            CpuGaugeValue = double.NaN; CpuCoreValues = Array.Empty<double>(); CpuSparkline = Array.Empty<float>();
             CpuTemperatureAlertLevel = CpuAlertLevel = AlertLevel.None;
             return;
         }
@@ -702,7 +702,7 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
         if (IsUnavailable(MetricSources.Gpu))
         {
             GpuSummary = GpuAdapterNameText = GpuUsageText = GpuCoreClockText = GpuTemperatureHotspotText = GpuFanText = GpuPowerText = GpuMemoryClockText = GpuVramText = "—";
-            GpuGaugeValue = Gpu3DValue = GpuCopyValue = GpuVideoValue = GpuComputeValue = GpuVramGaugeValue = 0;
+            GpuGaugeValue = Gpu3DValue = GpuCopyValue = GpuVideoValue = GpuComputeValue = GpuVramGaugeValue = double.NaN;
             GpuSparkline = GpuTemperatureSparkline = Array.Empty<float>(); GpuTemperatureAlertLevel = GpuAlertLevel = AlertLevel.None;
             return;
         }
@@ -764,7 +764,7 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
         if (IsUnavailable(MetricSources.Memory))
         {
             MemorySummary = MemoryUsageText = MemoryUsagePercentText = MemoryCachedText = MemoryStandbyText = MemoryModifiedText = MemoryFreeText = MemoryCompressedText = MemoryPoolText = MemorySystemCacheText = MemoryCommitText = MemoryCommitTooltipText = MemoryHandlesLine = MemoryHardwareReservedText = "—";
-            MemoryGaugeValue = MemoryCompressedBytes = 0; MemoryStackedValues = Array.Empty<double>(); MemorySparkline = Array.Empty<float>();
+            MemoryGaugeValue = double.NaN; MemoryCompressedBytes = 0; MemoryStackedValues = Array.Empty<double>(); MemorySparkline = Array.Empty<float>();
             MemoryCommitAlertLevel = MemoryAlertLevel = AlertLevel.None;
             return;
         }
@@ -1387,12 +1387,12 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
 
             if (existingIndex < 0)
             {
-                var row = new NetworkInterfaceRowViewModel(nic);
+                var row = new NetworkInterfaceRowViewModel(nic, IsUnavailable(MetricSources.Network));
                 _networkAllRows.Insert(Math.Min(desiredIndex, _networkAllRows.Count), row);
             }
             else
             {
-                _networkAllRows[existingIndex].Update(nic);
+                _networkAllRows[existingIndex].Update(nic, IsUnavailable(MetricSources.Network));
                 if (existingIndex != desiredIndex)
                 {
                     _networkAllRows.Move(existingIndex, desiredIndex);
@@ -1401,9 +1401,6 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
 
             desiredIndex++;
         }
-
-        if (IsUnavailable(MetricSources.Network))
-            foreach (var row in NetworkAllRows) row.MarkUnavailable();
     }
 
     private void ApplyThermal(ThermalSnapshot thermal)
@@ -1555,21 +1552,19 @@ public sealed class SidebarViewModel : INotifyPropertyChanged, IDisposable
             if (existingIndex < 0)
             {
                 var row = new ProcessRowViewModel(info.Pid);
-                row.Update(info);
+                row.Update(info, IsUnavailable(MetricSources.Processes));
                 int insertIndex = Math.Min(i, Processes.Count);
                 Processes.Insert(insertIndex, row);
             }
             else
             {
-                Processes[existingIndex].Update(info);
+                Processes[existingIndex].Update(info, IsUnavailable(MetricSources.Processes));
                 if (existingIndex != i)
                 {
                     Processes.Move(existingIndex, i);
                 }
             }
         }
-        if (IsUnavailable(MetricSources.Processes))
-            foreach (var row in Processes) row.MarkUnavailable();
     }
 
     private static string FormatClockOrDash(double? mhz) => mhz is double v && v > 0 ? ByteFormatter.Clock(v) : "—";

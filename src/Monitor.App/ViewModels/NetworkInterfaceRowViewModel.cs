@@ -20,11 +20,11 @@ public sealed class NetworkInterfaceRowViewModel : INotifyPropertyChanged
     private string _upText = string.Empty;
     private bool _isUp;
 
-    public NetworkInterfaceRowViewModel(NetworkInterfaceSnapshot nic)
+    public NetworkInterfaceRowViewModel(NetworkInterfaceSnapshot nic, bool unavailable = false)
     {
         _name = nic.Name;
         _description = nic.Description;
-        Update(nic);
+        Update(nic, unavailable);
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
@@ -43,10 +43,11 @@ public sealed class NetworkInterfaceRowViewModel : INotifyPropertyChanged
 
     public void MarkUnavailable() => NameText = DownText = UpText = "—";
 
-    public void Update(NetworkInterfaceSnapshot nic)
+    public void Update(NetworkInterfaceSnapshot nic, bool unavailable = false)
     {
         _name = nic.Name;
         _description = nic.Description;
+        if (unavailable) { MarkUnavailable(); return; }
         NameText = nic.Name.Length > 0 ? nic.Name : "(不明なアダプタ)";
         DownText = "↓ " + ByteFormatter.Bits(nic.ReceiveBytesPerSec);
         UpText = "↑ " + ByteFormatter.Bits(nic.SendBytesPerSec);

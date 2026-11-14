@@ -67,18 +67,18 @@ public sealed class SidebarViewModelDetailGatingTests
         }
         Assert.AreEqual(storageCount, vm.StorageRows.Count);
         Assert.AreEqual(processCount, vm.Processes.Count);
-        Assert.AreEqual(0.0, vm.CpuGaugeValue);
-        Assert.AreEqual(0.0, vm.GpuGaugeValue);
+        Assert.IsTrue(double.IsNaN(vm.CpuGaugeValue));
+        Assert.IsTrue(double.IsNaN(vm.GpuGaugeValue));
         Assert.AreEqual(0, vm.MemoryStackedValues.Count);
         Assert.AreEqual(0, vm.CpuSparkline.Length);
         Assert.IsTrue(vm.StorageRows.All(r => r.AlertLevel == AlertLevel.None));
         Assert.IsTrue(vm.StorageRows.Where(r => r.Kind == StorageRowKind.Disk).All(r => r.ReadText == "—" && r.WriteText == "—" && r.TemperatureText == "—" && r.WriteHistory.Length == 0));
-        Assert.IsTrue(vm.StorageRows.Where(r => r.Kind != StorageRowKind.Disk).All(r => r.CapacityText == "—" && r.UsagePercentText == "—" && r.GaugeValue == 0));
+        Assert.IsTrue(vm.StorageRows.Where(r => r.Kind != StorageRowKind.Disk).All(r => r.CapacityText == "—" && r.UsagePercentText == "—" && double.IsNaN(r.GaugeValue)));
         Assert.IsTrue(vm.Processes.All(r => r.CpuText == "—" && r.MemoryText == "—"));
         Assert.IsTrue(vm.NetworkAllRows.All(r => r.DownText == "—" && r.UpText == "—"));
         Assert.AreEqual("—", vm.MemoryModules[0].CapacityText);
         Assert.AreEqual("—", vm.PageFileRows[0].PercentText);
-        Assert.AreEqual(0.0, vm.PageFileRows[0].GaugeValue);
+        Assert.IsTrue(double.IsNaN(vm.PageFileRows[0].GaugeValue));
         Assert.AreEqual("—", vm.ThermalFans[0].ValueText);
 
         hub.PublishSnapshotForTest(healthy with { Timestamp = healthy.Timestamp.AddSeconds(2) });
