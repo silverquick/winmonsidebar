@@ -61,11 +61,12 @@
 - 影響: CPU/GPU/メモリ/温度の警告は動きがなく、見落としやすい。
 - 対応案: パルスを共通スタイルに切り出して他のセクションにも適用する。行は増えない。実機での見え方はユーザーに確認する（WPF の描画はスクリーンショットに写らないため）。
 
-### B-16 未接続と思われるマザーボード温度センサーが表示される
+### ~~B-16 未接続と思われるマザーボード温度センサーが表示される~~ ✅ 対応済み（2026-11-14）
 - 種別: 機能 / 規模: S〜M
 - 根拠: 2026-11-10 に実機（ASUS TUF GAMING B550-PLUS / Nuvoton NCT6798D、LHM 0.9.6）の全センサーを書き出したところ、`/lpc/nct6798d/0/temperature/3`（`Temperature #3`、約 93°C）と `/temperature/6`（`Temperature #6`、82.0°C）は数秒間ほとんど値が動かなかった。未接続の入力が出す値の可能性が高い（未確定。BIOS の温度表示と見比べれば確定できる）。これらは `OtherTemperatures` として温度セクションの「その他」に表示される（`SidebarViewModel.cs` の `ThermalOtherTemperatures`）。
 - 影響: 実在しない高温が画面に出て、異常と誤解しやすい。`SensorAliases` で名前は変えられるが、行を隠す方法がない。
 - 対応案: `AppSettings` に非表示にするセンサー名の一覧（例: `HiddenSensors`）を追加し、`LhmThermalProvider` で別名を当てる前の名前で除外する。行が減る方向の変更なので 1392px の高さには影響しない。
+- 使用例: `"HiddenSensors": ["Temperature #3", "Temperature #6"]`
 
 ## P3
 

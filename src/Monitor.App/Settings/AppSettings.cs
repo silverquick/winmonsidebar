@@ -33,6 +33,9 @@ public sealed class AppSettings
     /// 例: { "Temperature #3": "VRM", "Fan #1": "CPU ファン" }
     /// </summary>
     public Dictionary<string, string> SensorAliases { get; set; } = new();
+
+    /// <summary>表示しないセンサーの生の名前または LHM 識別子（大文字小文字を区別しない）。</summary>
+    public List<string> HiddenSensors { get; set; } = new();
 }
 
 /// <summary>
