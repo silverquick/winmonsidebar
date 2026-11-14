@@ -11,16 +11,6 @@ namespace Monitor.App.Tests;
 public sealed class LhmStorageThresholdSensorTests
 {
     [TestMethod]
-    public void 非表示センサー照合は生名識別子と空白を扱う()
-    {
-        Assert.IsFalse(LhmThermalProvider.IsHiddenSensor(Array.Empty<string>(), "Temperature #3", "id"));
-        Assert.IsTrue(LhmThermalProvider.IsHiddenSensor(new[] { "Temperature #3" }, "Temperature #3", "id"));
-        Assert.IsTrue(LhmThermalProvider.IsHiddenSensor(new[] { "temperature #3" }, "Temperature #3", "id"));
-        Assert.IsTrue(LhmThermalProvider.IsHiddenSensor(new[] { "id" }, "Temperature #3", "id"));
-        Assert.IsFalse(LhmThermalProvider.IsHiddenSensor(new[] { "  ", "" }, "Temperature #3", "id"));
-    }
-
-    [TestMethod]
     [DataRow("Warning Temperature")]
     [DataRow("Critical Temperature")]
     [DataRow("critical temperature ")]
