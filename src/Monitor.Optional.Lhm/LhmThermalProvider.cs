@@ -13,6 +13,7 @@ namespace Monitor.Optional.Lhm;
 public sealed class LhmThermalProvider : IThermalProvider
 {
     private readonly IReadOnlyDictionary<string, string> _sensorAliases;
+    private readonly HashSet<string> _hiddenSensors;
 
     private Computer? _computer;
     private bool _isElevated;
@@ -23,9 +24,13 @@ public sealed class LhmThermalProvider : IThermalProvider
     /// 利用者が特定した名前を外から与えられるようにする。別名は分類にも使われるので、
     /// "VRM" を含む名前を与えればその値は VRM として扱われる。
     /// </param>
-    public LhmThermalProvider(IReadOnlyDictionary<string, string>? sensorAliases = null)
+    public LhmThermalProvider(IReadOnlyDictionary<string, string>? sensorAliases = null, IEnumerable<string>? hiddenSensors = null)
     {
         _sensorAliases = sensorAliases ?? new Dictionary<string, string>();
+        _hiddenSensors = (hiddenSensors ?? Array.Empty<string>())
+            .Where(static entry => !string.IsNullOrWhiteSpace(entry))
+            .Select(static entry => entry.Trim())
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
     }
 
     public string Name => "LibreHardwareMonitor";
@@ -280,6 +285,10 @@ public sealed class LhmThermalProvider : IThermalProvider
         // 別名は分類より前に適用する。こうすると利用者が "Temperature #3" に "VRM" を割り当てた
         // だけで、以降の名前判定がそれを VRM として拾い、表示名も置き換わる。
         string rawName = sensor.Name ?? "";
+        if (sensor.SensorType == SensorType.Temperature && IsHiddenSensor(_hiddenSensors, rawName, sensor.Identifier.ToString()))
+        {
+            return;
+        }
         string name = _sensorAliases.TryGetValue(rawName, out string? alias) && !string.IsNullOrWhiteSpace(alias)
             ? alias
             : rawName;
@@ -385,6 +394,10 @@ public sealed class LhmThermalProvider : IThermalProvider
         rawSensorName.Trim() is var n &&
         (n.Equals("Warning Temperature", StringComparison.OrdinalIgnoreCase) ||
          n.Equals("Critical Temperature", StringComparison.OrdinalIgnoreCase));
+
+    internal static bool IsHiddenSensor(IEnumerable<string> hiddenSensors, string rawName, string identifier) =>
+        hiddenSensors.Any(entry => entry.Equals(rawName, StringComparison.OrdinalIgnoreCase) ||
+                                   (!string.IsNullOrEmpty(identifier) && entry.Equals(identifier, StringComparison.OrdinalIgnoreCase)));
 
     /// <summary>
     /// 全ハードウェア（サブハードウェアも含む）の値を更新してから走査するための Visitor。

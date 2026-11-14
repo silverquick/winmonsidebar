@@ -381,7 +381,8 @@ winmonsidebar/
     "Temperature #3": "VRM",
     "Fan #1": "CPU ファン",
     "Fan #2": "ケース前面"
-  }
+  },
+  "HiddenSensors": ["Temperature #3", "Temperature #6"]
 }
 ```
 
@@ -389,6 +390,9 @@ winmonsidebar/
 `app.log` へ `thermal: others = ...` / `thermal: fans = ...` として記録されるので、そこから拾う。
 別名は表示だけでなく分類にも効き、`"VRM"` を含む名前を与えるとその値は「その他温度」ではなく
 VRM の欄に入る。
+
+`HiddenSensors` は表示しない温度センサーの一覧。生のセンサー名または LHM の識別子を指定する。
+照合は大文字小文字を区別せず、別名適用前の名前で判定する。空欄は無視される。
 
 サイドバーを右クリックすると「最前面表示」「管理者で再起動」「幅をリセット」「終了」が出る。
 

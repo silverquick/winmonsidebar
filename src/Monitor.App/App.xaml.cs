@@ -99,7 +99,7 @@ public partial class App : Application
             new NetworkProvider(),
             new GpuProvider(NvidiaVendorSensors.TryCreate),
             new ProcessProvider(options.TopProcessCount),
-            new LhmThermalProvider(settings.SensorAliases),
+            new LhmThermalProvider(settings.SensorAliases, settings.HiddenSensors),
             new VolumeProvider());
 
         // 温度・ファンは権限とハードウェアに強く依存し、取れないときの原因が画面からは分からない。
