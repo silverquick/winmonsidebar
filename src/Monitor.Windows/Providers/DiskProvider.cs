@@ -353,7 +353,7 @@ public sealed class DiskProvider : IMetricProvider<DiskSnapshot>
     /// <summary>Collects and reads the three PDH counters, splitting instance values into a per-physical-
     /// -drive-number lookup (parsed from the leading digit token of instance names like "0 C:") and the
     /// separate "_Total" instance. Returns an empty dictionary and null total if PDH is unavailable.</summary>
-    private (Dictionary<int, PdhDiskRates> ByDrive, PdhDiskRates? Total) ReadPdhRates()
+    internal (Dictionary<int, PdhDiskRates> ByDrive, PdhDiskRates? Total) ReadPdhRates(bool collect = true)
     {
         if (_readRates is not null)
         {
@@ -363,12 +363,12 @@ public sealed class DiskProvider : IMetricProvider<DiskSnapshot>
         Dictionary<int, PdhDiskRates> byDrive = _pdhRatesByDriveBuffer;
         byDrive.Clear();
 
-        if (_query is null || _readCounter is null || _writeCounter is null || _busyCounter is null)
+        if ((collect && _query is null) || _readCounter is null || _writeCounter is null || _busyCounter is null)
         {
             return (byDrive, null);
         }
 
-        if (!_query.Collect())
+        if (collect && !_query!.Collect())
         {
             LastSampleFailed = true;
             return (byDrive, null);
@@ -379,17 +379,25 @@ public sealed class DiskProvider : IMetricProvider<DiskSnapshot>
         double totalRead = 0.0;
         double totalWrite = 0.0;
         double totalBusy = 0.0;
-        bool hasTotal = false;
+        bool readTotalOk = false, writeTotalOk = false, busyTotalOk = false;
+        bool readDeviceOk = false, writeDeviceOk = false, busyDeviceOk = false;
 
         foreach (PdhItemSpan item in _readCounter.Enumerate())
         {
+            if (item.ReadStatus != PdhReadStatus.Success)
+            {
+                if (item.ReadStatus == PdhReadStatus.Failed && !item.InstanceName.Equals(TotalInstanceName, StringComparison.OrdinalIgnoreCase))
+                    LastSampleFailed = true;
+                continue;
+            }
             if (item.InstanceName.Equals(TotalInstanceName, StringComparison.OrdinalIgnoreCase))
             {
                 totalRead = item.Value;
-                hasTotal = true;
+                readTotalOk = true;
             }
             else if (TryParseDriveNumber(item.InstanceName, out int driveNumber))
             {
+                readDeviceOk = true;
                 ref DiskRateAccumulator acc = ref CollectionsMarshal.GetValueRefOrAddDefault(accumulators, driveNumber, out _);
                 acc.Read = item.Value;
             }
@@ -397,13 +405,20 @@ public sealed class DiskProvider : IMetricProvider<DiskSnapshot>
 
         foreach (PdhItemSpan item in _writeCounter.Enumerate())
         {
+            if (item.ReadStatus != PdhReadStatus.Success)
+            {
+                if (item.ReadStatus == PdhReadStatus.Failed && !item.InstanceName.Equals(TotalInstanceName, StringComparison.OrdinalIgnoreCase))
+                    LastSampleFailed = true;
+                continue;
+            }
             if (item.InstanceName.Equals(TotalInstanceName, StringComparison.OrdinalIgnoreCase))
             {
                 totalWrite = item.Value;
-                hasTotal = true;
+                writeTotalOk = true;
             }
             else if (TryParseDriveNumber(item.InstanceName, out int driveNumber))
             {
+                writeDeviceOk = true;
                 ref DiskRateAccumulator acc = ref CollectionsMarshal.GetValueRefOrAddDefault(accumulators, driveNumber, out _);
                 acc.Write = item.Value;
             }
@@ -411,18 +426,30 @@ public sealed class DiskProvider : IMetricProvider<DiskSnapshot>
 
         foreach (PdhItemSpan item in _busyCounter.Enumerate())
         {
+            if (item.ReadStatus != PdhReadStatus.Success)
+            {
+                if (item.ReadStatus == PdhReadStatus.Failed && !item.InstanceName.Equals(TotalInstanceName, StringComparison.OrdinalIgnoreCase))
+                    LastSampleFailed = true;
+                continue;
+            }
             if (item.InstanceName.Equals(TotalInstanceName, StringComparison.OrdinalIgnoreCase))
             {
                 totalBusy = ClampPercent(item.Value);
-                hasTotal = true;
+                busyTotalOk = true;
             }
             else if (TryParseDriveNumber(item.InstanceName, out int driveNumber))
             {
+                busyDeviceOk = true;
                 ref DiskRateAccumulator acc = ref CollectionsMarshal.GetValueRefOrAddDefault(accumulators, driveNumber, out _);
                 acc.Busy = ClampPercent(item.Value);
             }
         }
 
+        // _Total のみの失敗なら、正常なデバイス別値の合計を有効な代替元として使う。
+        LastSampleFailed |= _readCounter.LastApiReadFailed || _writeCounter.LastApiReadFailed || _busyCounter.LastApiReadFailed ||
+            (_readCounter.LastReadFailed && !readDeviceOk) || (_writeCounter.LastReadFailed && !writeDeviceOk) ||
+            (_busyCounter.LastReadFailed && !busyDeviceOk);
+        bool hasTotal = readTotalOk && writeTotalOk && busyTotalOk;
         PdhDiskRates? total = hasTotal ? new PdhDiskRates(totalRead, totalWrite, totalBusy) : null;
         foreach ((int driveNumber, DiskRateAccumulator acc) in accumulators)
         {

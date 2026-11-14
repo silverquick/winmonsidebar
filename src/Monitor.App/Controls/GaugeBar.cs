@@ -89,38 +89,41 @@ public sealed class GaugeBar : FrameworkElement, IAnimatableControl
 
     private static void OnValueChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
-        if (d is GaugeBar bar)
+        var bar = (GaugeBar)d;
+        bar.UpdateTarget((double)e.NewValue, bar.IsLoaded && bar.IsVisible && bar.SmoothingTime > TimeSpan.Zero);
+    }
+
+    /// <summary>描画可能性を引数に分離し、復旧時の即時スナップをウィンドウなしでも検証する。</summary>
+    internal void UpdateTarget(double raw, bool animate)
+    {
+        if (double.IsNaN(raw))
         {
-            double raw = (double)e.NewValue;
-            if (double.IsNaN(raw))
-            {
-                bar._isUnavailable = true;
-                bar._current = bar._target = 0;
-                bar._isComplete = true;
-                FrameAnimationClock.Unregister(bar);
-                bar.UpdateClipRect();
-                bar.InvalidateVisual();
-                return;
-            }
-
-            bool recovered = bar._isUnavailable;
-            bar._isUnavailable = false;
-            double sanitized = double.IsFinite(raw) ? Math.Clamp(raw, 0.0, 100.0) : (bar._hasTarget ? bar._target : 0.0);
-            bar._target = sanitized;
-            bar._hasTarget = true;
-
-            if (recovered || !bar.IsLoaded || !bar.IsVisible || bar.SmoothingTime <= TimeSpan.Zero)
-            {
-                bar._current = sanitized;
-                bar._isComplete = true;
-                bar.UpdateClipRect();
-                bar.InvalidateVisual();
-                return;
-            }
-
-            bar._isComplete = false;
-            FrameAnimationClock.Register(bar);
+            _isUnavailable = true;
+            _current = _target = 0;
+            _isComplete = true;
+            FrameAnimationClock.Unregister(this);
+            UpdateClipRect();
+            InvalidateVisual();
+            return;
         }
+
+        bool recovered = _isUnavailable;
+        _isUnavailable = false;
+        double sanitized = double.IsFinite(raw) ? Math.Clamp(raw, 0.0, 100.0) : (_hasTarget ? _target : 0.0);
+        _target = sanitized;
+        _hasTarget = true;
+
+        if (recovered || !animate)
+        {
+            _current = sanitized;
+            _isComplete = true;
+            UpdateClipRect();
+            InvalidateVisual();
+            return;
+        }
+
+        _isComplete = false;
+        FrameAnimationClock.Register(this);
     }
 
     private void OnLoaded(object sender, RoutedEventArgs e)

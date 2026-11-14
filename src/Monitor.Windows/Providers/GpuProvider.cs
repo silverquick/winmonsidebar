@@ -145,6 +145,7 @@ public sealed class GpuProvider : IMetricProvider<GpuSnapshot>
                 GetOrAddAccumulator(luid).AddEngine(engineType, item.Value);
             }
 
+            LastSampleFailed |= _engineCounter.LastReadFailed;
             if (_dedicatedMemoryCounter is not null)
             {
                 foreach (PdhItemSpan item in _dedicatedMemoryCounter.Enumerate())
@@ -157,6 +158,8 @@ public sealed class GpuProvider : IMetricProvider<GpuSnapshot>
                     GetOrAddAccumulator(luid).DedicatedUsedBytes += ClampToBytes(item.Value);
                 }
             }
+
+            LastSampleFailed |= _dedicatedMemoryCounter?.LastReadFailed == true;
 
             // このサンプルで見えなかった（脱着等で消えた）アダプタの残骸を除去する。
             // こうしないと、次回以降そのアダプタが再度見えるまでゼロ値のまま出力に残り続けてしまう。

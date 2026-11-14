@@ -15,6 +15,19 @@ public sealed class LhmThermalProvider : IThermalProvider
     private readonly IReadOnlyDictionary<string, string> _sensorAliases;
     private readonly HashSet<string> _hiddenSensors;
 
+    private readonly HashSet<IHardware> _representativeHardware = new();
+    private readonly HashSet<IHardware> _knownHardware = new();
+    private readonly HashSet<IHardware> _representativeBranches = new();
+    private readonly HashSet<IHardware> _knownBranches = new();
+    private readonly HashSet<ISensor> _knownSensors = new();
+    private readonly HashSet<ISensor> _representativeSensors = new();
+    private IHardware[]? _hardwareForTest;
+    internal void SetHardwareForTest(IHardware[] hardware)
+    {
+        _hardwareForTest = hardware;
+        IsAvailable = _isElevated = true;
+    }
+
     private Computer? _computer;
     private bool _isElevated;
 
@@ -100,18 +113,14 @@ public sealed class LhmThermalProvider : IThermalProvider
     public ThermalSnapshot Sample(TimeSpan elapsed)
     {
         LastSampleFailed = false;
-        if (!IsAvailable || _computer is null)
+        if (!IsAvailable || (_computer is null && _hardwareForTest is null))
         {
             return ThermalSnapshot.Empty with { IsElevated = _isElevated, Source = "none" };
         }
 
         try
         {
-            var visitor = new UpdateVisitor();
-            foreach (IHardware hw in _computer.Hardware)
-            {
-                hw.Accept(visitor);
-            }
+            IList<IHardware> hardware = _hardwareForTest ?? _computer!.Hardware;
 
             double? cpuPackageTemp = null;
             double? cpuPackagePower = null;
@@ -122,8 +131,9 @@ public sealed class LhmThermalProvider : IThermalProvider
             var otherTemps = new List<SensorReading>();
             var storageTemps = new List<SensorReading>();
 
-            foreach (IHardware hw in _computer.Hardware)
+            for (int hardwareIndex = 0; hardwareIndex < hardware.Count; hardwareIndex++)
             {
+                IHardware hw = hardware[hardwareIndex];
                 CollectFromHardware(
                     hw,
                     ref cpuPackageTemp,
@@ -225,48 +235,103 @@ public sealed class LhmThermalProvider : IThermalProvider
         List<SensorReading> otherTemps,
         List<SensorReading> storageTemps)
     {
+        bool updated = true;
+        try { hw.Update(); }
+        catch { updated = false; RecordHardwareFailure(hw); }
+
+        if (updated)
+        {
+            try
+            {
+                foreach (ISensor sensor in hw.Sensors)
+                {
+                    try
+                    {
+                        if (!_knownSensors.Contains(sensor))
+                        {
+                            if (IsRepresentativeSensor(hw, sensor))
+                            {
+                                _representativeHardware.Add(hw);
+                                _representativeSensors.Add(sensor);
+                            }
+                            _knownSensors.Add(sensor);
+                        }
+                        ClassifySensor(hw, sensor, ref cpuPackageTemp, ref cpuPackagePower, ref vrmTemp, ref mbTemp,
+                            cpuCoreTemps, fans, otherTemps, storageTemps);
+                    }
+                    catch
+                    {
+                        // 読めない補助センサーは捨てる。代表温度の失敗だけをソースの失敗にする。
+                        if (_knownSensors.Contains(sensor)) LastSampleFailed |= _representativeSensors.Contains(sensor);
+                        else
+                        {
+                            try { if (IsRepresentativeSensor(hw, sensor)) LastSampleFailed = true; }
+                            catch { RecordHardwareFailure(hw); }
+                        }
+                    }
+                }
+                _knownHardware.Add(hw);
+            }
+            catch { RecordHardwareFailure(hw); }
+        }
+
+        // 親の更新が失敗しても、独立して更新できる子のデータは読む。
         try
         {
-            foreach (ISensor sensor in hw.Sensors)
-            {
-                try
-                {
-                    ClassifySensor(
-                        hw,
-                        sensor,
-                        ref cpuPackageTemp,
-                        ref cpuPackagePower,
-                        ref vrmTemp,
-                        ref mbTemp,
-                        cpuCoreTemps,
-                        fans,
-                        otherTemps,
-                        storageTemps);
-                }
-                catch
-                {
-                    // 1センサーの読み取り失敗は無視して続行する。
-                }
-            }
-
             foreach (IHardware sub in hw.SubHardware)
             {
-                CollectFromHardware(
-                    sub,
-                    ref cpuPackageTemp,
-                    ref cpuPackagePower,
-                    ref vrmTemp,
-                    ref mbTemp,
-                    cpuCoreTemps,
-                    fans,
-                    otherTemps,
-                    storageTemps);
+                CollectFromHardware(sub, ref cpuPackageTemp, ref cpuPackagePower, ref vrmTemp, ref mbTemp,
+                    cpuCoreTemps, fans, otherTemps, storageTemps);
+                if (_representativeHardware.Contains(sub) || _representativeBranches.Contains(sub)) _representativeBranches.Add(hw);
             }
+            _knownBranches.Add(hw);
         }
         catch
         {
-            // このハードウェア丸ごとの走査失敗は無視して続行する。
+            if (_representativeBranches.Contains(hw) || (!_knownBranches.Contains(hw) && CouldSupplyRepresentative(hw))) LastSampleFailed = true;
+            else RecordHardwareFailure(hw);
         }
+    }
+
+    private void RecordHardwareFailure(IHardware hw)
+    {
+        if (_representativeHardware.Contains(hw)) { LastSampleFailed = true; return; }
+        try
+        {
+            foreach (ISensor sensor in hw.Sensors)
+                if (IsRepresentativeSensor(hw, sensor)) { LastSampleFailed = true; return; }
+        }
+        catch
+        {
+            // 既知の補助ハードウェアは全体を落とさない。初回から走査不能なら保守的に判定する。
+            if (!_knownHardware.Contains(hw))
+            {
+                LastSampleFailed |= CouldSupplyRepresentative(hw);
+            }
+        }
+    }
+
+    private static bool CouldSupplyRepresentative(IHardware hw)
+    {
+        try { return hw.HardwareType is HardwareType.Cpu or HardwareType.Motherboard or HardwareType.SuperIO or HardwareType.Storage; }
+        catch { return true; }
+    }
+
+    private bool IsRepresentativeSensor(IHardware hw, ISensor sensor)
+    {
+        if (sensor.SensorType != SensorType.Temperature) return false;
+        string rawName = sensor.Name ?? "";
+        if (_hiddenSensors.Count > 0 && IsHiddenSensor(_hiddenSensors, rawName, sensor.Identifier.ToString())) return false;
+        string name = _sensorAliases.TryGetValue(rawName, out string? alias) && !string.IsNullOrWhiteSpace(alias) ? alias : rawName;
+        return hw.HardwareType switch
+        {
+            HardwareType.Cpu => name.Contains("Tctl", StringComparison.OrdinalIgnoreCase) || name.Contains("Package", StringComparison.OrdinalIgnoreCase),
+            HardwareType.Motherboard or HardwareType.SuperIO => name.Contains("VRM", StringComparison.OrdinalIgnoreCase) ||
+                name.Contains("System", StringComparison.OrdinalIgnoreCase) || name.Contains("Motherboard", StringComparison.OrdinalIgnoreCase) ||
+                name.Contains("Temperature #1", StringComparison.OrdinalIgnoreCase),
+            HardwareType.Storage => !IsStorageThresholdSensor(rawName),
+            _ => false,
+        };
     }
 
     private void ClassifySensor(
@@ -281,14 +346,6 @@ public sealed class LhmThermalProvider : IThermalProvider
         List<SensorReading> otherTemps,
         List<SensorReading> storageTemps)
     {
-        if (!sensor.Value.HasValue)
-        {
-            return;
-        }
-
-        double value = sensor.Value.Value;
-        HardwareType hwType = hw.HardwareType;
-
         // 別名は分類より前に適用する。こうすると利用者が "Temperature #3" に "VRM" を割り当てた
         // だけで、以降の名前判定がそれを VRM として拾い、表示名も置き換わる。
         string rawName = sensor.Name ?? "";
@@ -300,6 +357,10 @@ public sealed class LhmThermalProvider : IThermalProvider
         string name = _sensorAliases.TryGetValue(rawName, out string? alias) && !string.IsNullOrWhiteSpace(alias)
             ? alias
             : rawName;
+        float? reading = sensor.Value;
+        if (!reading.HasValue) return;
+        double value = reading.Value;
+        HardwareType hwType = hw.HardwareType;
 
         // ---- Fan（RPM）。ハードウェア種別を問わず拾う。未接続（0 RPM）は除外。 ----
         if (sensor.SensorType == SensorType.Fan)
@@ -406,40 +467,4 @@ public sealed class LhmThermalProvider : IThermalProvider
     internal static bool IsHiddenSensor(IReadOnlySet<string> hiddenSensors, string rawName, string identifier) =>
         hiddenSensors.Contains(rawName) || (!string.IsNullOrEmpty(identifier) && hiddenSensors.Contains(identifier));
 
-    /// <summary>
-    /// 全ハードウェア（サブハードウェアも含む）の値を更新してから走査するための Visitor。
-    /// LHM は hardware.Update() を呼ばないと Sensor.Value が更新されない。
-    /// </summary>
-    private sealed class UpdateVisitor : IVisitor
-    {
-        public void VisitComputer(IComputer computer)
-        {
-            computer.Traverse(this);
-        }
-
-        public void VisitHardware(IHardware hardware)
-        {
-            try
-            {
-                hardware.Update();
-            }
-            catch
-            {
-                // このハードウェアの更新失敗は無視して子の走査は継続する。
-            }
-
-            foreach (IHardware sub in hardware.SubHardware)
-            {
-                sub.Accept(this);
-            }
-        }
-
-        public void VisitSensor(ISensor sensor)
-        {
-        }
-
-        public void VisitParameter(IParameter parameter)
-        {
-        }
-    }
 }

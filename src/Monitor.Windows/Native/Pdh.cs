@@ -33,6 +33,7 @@ internal static partial class Pdh
     public const uint PDH_MORE_DATA = 0x800007D2;
     public const uint PDH_CSTATUS_VALID_DATA = 0;
     public const uint PDH_CSTATUS_NEW_DATA = 1;
+    public const uint PDH_CSTATUS_INVALID_DATA = 0xC0000BBA;
     public const uint PDH_INVALID_DATA = 0xC0000BC6;
     public const uint PDH_NO_DATA = 0x800007D5;
     public const uint PDH_CALC_NEGATIVE_DENOMINATOR = 0x800007D6;

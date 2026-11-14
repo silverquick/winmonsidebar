@@ -166,14 +166,11 @@ public sealed class MemoryProvider : IMetricProvider<MemorySnapshot>
             ulong used = total > available ? total - available : 0;
             double usedPercent = total > 0 ? (double)used / total * 100.0 : 0.0;
 
-            // カウンターが全て非対応の場合は、従来どおり Win32 の概要値を使う。
-            if (_pdhQuery?.Collect() == false &&
-                (_committedBytesCounter is not null || _commitLimitCounter is not null || _cacheBytesCounter is not null ||
-                 _poolPagedCounter is not null || _poolNonPagedCounter is not null || _modifiedPageListCounter is not null ||
-                 _freeZeroPageListCounter is not null || _standbyCoreCounter is not null || _standbyNormalCounter is not null ||
-                 _standbyReserveCounter is not null || _pagingFileUsagePercentTotalCounter is not null ||
-                 _pagingFileUsageMultiCounter is not null || _pagingFileUsagePeakMultiCounter is not null))
-                LastSampleFailed = true;
+            // 代替できない内訳カウンターがあるときだけ、収集自体の失敗もサンプル失敗にする。
+            bool collected = _pdhQuery?.Collect() != false;
+            LastSampleFailed |= !collected && (_cacheBytesCounter is not null || _modifiedPageListCounter is not null ||
+                _freeZeroPageListCounter is not null || _standbyCoreCounter is not null ||
+                _standbyNormalCounter is not null || _standbyReserveCounter is not null);
 
             ulong committed = ReadCounterUlongOrZero(_committedBytesCounter, out bool committedOk);
             ulong commitLimit = ReadCounterUlongOrZero(_commitLimitCounter, out bool limitOk);
@@ -193,6 +190,15 @@ public sealed class MemoryProvider : IMetricProvider<MemorySnapshot>
             double pdhPageFileUsagePercent = ReadCounterDoubleOrZero(_pagingFileUsagePercentTotalCounter);
 
             (PERFORMANCE_INFORMATION perf, bool perfOk, ulong pageSize) = ReadPerformanceInfo();
+            LastSampleFailed |= !perfOk || _cacheBytesCounter?.LastReadFailed == true ||
+                _modifiedPageListCounter?.LastReadFailed == true || _freeZeroPageListCounter?.LastReadFailed == true ||
+                _standbyCoreCounter?.LastReadFailed == true || _standbyNormalCounter?.LastReadFailed == true ||
+                _standbyReserveCounter?.LastReadFailed == true;
+            // コミットは GlobalMemoryStatusEx、プールは GetPerformanceInfo の成功値で代用できる。
+            LastSampleFailed |= PdhReadHealth.RequiredFailed(_poolPagedCounter is not null,
+                _poolPagedCounter?.LastReadStatus ?? PdhReadStatus.Success, perfOk);
+            LastSampleFailed |= PdhReadHealth.RequiredFailed(_poolNonPagedCounter is not null,
+                _poolNonPagedCounter?.LastReadStatus ?? PdhReadStatus.Success, perfOk);
 
             ulong systemCacheBytes = perfOk ? (ulong)perf.SystemCache * pageSize : 0;
             ulong commitPeakBytes = perfOk ? (ulong)perf.CommitPeak * pageSize : 0;

@@ -26,6 +26,8 @@ public sealed partial class VolumeProvider : IMetricProvider<IReadOnlyList<Volum
     private DateTime _lastRefreshStartUtc = DateTime.MinValue;
     private readonly object _cacheGate = new();
     private bool _refreshFailed;
+    internal readonly record struct VolumeReadResult(VolumeSnapshot Snapshot, bool Failed);
+    internal Func<string, VolumeReadResult>? ReadVolumeForTest { get; set; }
     internal Func<string[]>? ReadDriveNamesForTest { get; set; }
     internal Task RefreshForTest() => RefreshAsync(CancellationToken.None);
     private volatile IReadOnlyList<VolumeSnapshot> _cache = Array.Empty<VolumeSnapshot>();
@@ -169,11 +171,11 @@ public sealed partial class VolumeProvider : IMetricProvider<IReadOnlyList<Volum
         }
 
         bool refreshSucceeded = true;
-        var pending = new List<Task<VolumeSnapshot>>(driveNames.Length);
+        var pending = new List<Task<VolumeReadResult>>(driveNames.Length);
         DateTime lastPublishUtc = DateTime.MinValue;
         foreach (string driveName in driveNames)
         {
-            pending.Add(Task.Run(() => ReadVolumeSafe(driveName), token));
+            pending.Add(Task.Run(() => ReadVolumeForTest is { } read ? read(driveName) : ReadVolumeSafe(driveName), token));
         }
 
         while (pending.Count > 0)
@@ -183,12 +185,19 @@ public sealed partial class VolumeProvider : IMetricProvider<IReadOnlyList<Volum
                 return;
             }
 
-            Task<VolumeSnapshot> completed = await Task.WhenAny(pending).ConfigureAwait(false);
+            Task<VolumeReadResult> completed = await Task.WhenAny(pending).ConfigureAwait(false);
             pending.Remove(completed);
 
             try
             {
-                VolumeSnapshot snapshot = await completed.ConfigureAwait(false);
+                VolumeReadResult result = await completed.ConfigureAwait(false);
+                if (result.Failed)
+                {
+                    refreshSucceeded = false;
+                    lock (_cacheGate) _refreshFailed = true;
+                    continue; // 失敗を not-ready の観測と取り違えて、正常な容量キャッシュを上書きしない。
+                }
+                VolumeSnapshot snapshot = result.Snapshot;
                 working[snapshot.DriveLetter] = snapshot;
                 if (DateTime.UtcNow - lastPublishUtc >= TimeSpan.FromMilliseconds(500))
                 {
@@ -210,9 +219,10 @@ public sealed partial class VolumeProvider : IMetricProvider<IReadOnlyList<Volum
     /// <summary>Reads everything for one drive letter. Every failure path returns a non-null snapshot
     /// with <see cref="VolumeSnapshot.IsReady"/> == false and zeroed capacity rather than throwing or
     /// omitting the drive, per this codebase's "provider never throws, missing data is null/0" rule.</summary>
-    private static VolumeSnapshot ReadVolumeSafe(string driveNamePath)
+    private static VolumeReadResult ReadVolumeSafe(string driveNamePath)
     {
         string letter = driveNamePath.TrimEnd('\\');
+        bool failed = false;
 
         try
         {
@@ -242,7 +252,7 @@ public sealed partial class VolumeProvider : IMetricProvider<IReadOnlyList<Volum
             }
             catch
             {
-                // leave label/fileSystem null
+                failed = true; // unexpected exception, not an absent optional label
             }
 
             ulong total = 0, free = 0, used = 0;
@@ -258,10 +268,14 @@ public sealed partial class VolumeProvider : IMetricProvider<IReadOnlyList<Volum
                     usedPercent = total > 0 ? ClampPercent(100.0 * used / total) : 0.0;
                     isReady = true;
                 }
+                else
+                {
+                    failed |= !IsExpectedNotReady(kind, Marshal.GetLastPInvokeError());
+                }
             }
             catch
             {
-                // leave capacity fields at their zeroed defaults, IsReady = false
+                failed = true;
             }
 
             string? networkPath = null;
@@ -275,7 +289,7 @@ public sealed partial class VolumeProvider : IMetricProvider<IReadOnlyList<Volum
                 physicalDriveNumber = StorageApi.TryGetPhysicalDriveNumber(letter);
             }
 
-            return new VolumeSnapshot
+            return new VolumeReadResult(new VolumeSnapshot
             {
                 DriveLetter = letter,
                 Label = label,
@@ -288,18 +302,26 @@ public sealed partial class VolumeProvider : IMetricProvider<IReadOnlyList<Volum
                 UsedPercent = usedPercent,
                 PhysicalDriveNumber = physicalDriveNumber,
                 IsReady = isReady,
-            };
+            }, failed);
         }
         catch
         {
-            return new VolumeSnapshot
+            return new VolumeReadResult(new VolumeSnapshot
             {
                 DriveLetter = letter,
                 Kind = VolumeKind.Unknown,
                 IsReady = false,
-            };
+            }, true);
         }
     }
+
+    internal static bool IsExpectedNotReady(VolumeKind kind, int error) => kind switch
+    {
+        VolumeKind.Network => error is 2 or 3 or 15 or 21 or 53 or 55 or 64 or 67 or 121 or 1167 or
+            1201 or 1222 or 1231 or 1232 or 1236 or 1460 or 2250,
+        VolumeKind.Removable or VolumeKind.CdRom => error is 21 or 1112,
+        _ => false,
+    };
 
     /// <summary>Resolves a network drive's UNC target via WNetGetConnectionW, retrying once with a
     /// larger buffer on ERROR_MORE_DATA. Returns null (never throws) if the drive is not actually a

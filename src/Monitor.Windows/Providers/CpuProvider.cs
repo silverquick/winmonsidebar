@@ -99,7 +99,7 @@ public sealed partial class CpuProvider : IMetricProvider<CpuSnapshot>, IDetailS
             {
                 // 現在クロックの単一カウンターを更新するためだけに1回 Collect する。
                 if (_pdhQuery?.Collect() == false &&
-                    (_performancePercentCounter is not null || _perCoreCounter is not null || _perCoreClockCounter is not null))
+                    (_performancePercentCounter is not null && _baseClockMhz <= 0))
                     LastSampleFailed = true;
                 perCoreUsagePercent = Array.Empty<double>();
                 perCoreClockMhz = Array.Empty<double>();
@@ -190,6 +190,7 @@ public sealed partial class CpuProvider : IMetricProvider<CpuSnapshot>, IDetailS
                 }
             }
 
+            LastSampleFailed |= _perCoreCounter.LastReadFailed;
             if (_coreBuffer.Count == 0)
             {
                 return Array.Empty<double>();
@@ -231,6 +232,7 @@ public sealed partial class CpuProvider : IMetricProvider<CpuSnapshot>, IDetailS
                 }
             }
 
+            LastSampleFailed |= _perCoreClockCounter.LastReadFailed;
             if (_coreBuffer.Count == 0)
             {
                 return Array.Empty<double>();
@@ -265,6 +267,7 @@ public sealed partial class CpuProvider : IMetricProvider<CpuSnapshot>, IDetailS
             double perf = _performancePercentCounter.GetDouble();
             if (!_performancePercentCounter.HasValue)
             {
+                LastSampleFailed |= PdhReadHealth.RequiredFailed(true, _performancePercentCounter.LastReadStatus, _baseClockMhz > 0);
                 return _baseClockMhz;
             }
 

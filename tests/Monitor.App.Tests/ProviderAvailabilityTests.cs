@@ -18,6 +18,43 @@ namespace Monitor.App.Tests;
 public sealed class ProviderAvailabilityTests
 {
     [TestMethod]
+    public async Task Volume_ReadFailureKeepsGoodCapacity_ExpectedNotReadyRemainsHealthy()
+    {
+        var good = new VolumeSnapshot { DriveLetter = "Z:", Kind = VolumeKind.Network, IsReady = true, TotalBytes = 100, UsedBytes = 25 };
+        var missing = good with { IsReady = false, TotalBytes = 0, UsedBytes = 0 };
+        using var provider = new VolumeProvider { ReadDriveNamesForTest = () => ["Z:\\"] };
+        provider.ReadVolumeForTest = _ => new(good, Failed: false);
+        await provider.RefreshForTest();
+        Assert.AreSame(good, provider.Sample(TimeSpan.FromSeconds(5))[0]);
+        provider.ReadVolumeForTest = _ => new(missing, Failed: true);
+        await provider.RefreshForTest();
+        Assert.AreSame(good, provider.Sample(TimeSpan.FromSeconds(5))[0]);
+        Assert.IsTrue(provider.LastSampleFailed);
+        provider.ReadVolumeForTest = _ => throw new IOException("unexpected read exception");
+        await provider.RefreshForTest();
+        Assert.AreSame(good, provider.Sample(TimeSpan.FromSeconds(5))[0]);
+        Assert.IsTrue(provider.LastSampleFailed);
+        provider.ReadVolumeForTest = _ => new(missing, Failed: false);
+        await provider.RefreshForTest();
+        Assert.AreSame(missing, provider.Sample(TimeSpan.FromSeconds(5))[0]);
+        Assert.IsFalse(provider.LastSampleFailed, "Normal disconnected network observation must remain eligible for existing alerts.");
+    }
+
+    [TestMethod]
+    [DataRow(VolumeKind.Network, 53, true)]
+    [DataRow(VolumeKind.Network, 2250, true)]
+    [DataRow(VolumeKind.Network, 1201, true)]
+    [DataRow(VolumeKind.Network, 1222, true)]
+    [DataRow(VolumeKind.Network, 1232, true)]
+    [DataRow(VolumeKind.Removable, 21, true)]
+    [DataRow(VolumeKind.CdRom, 1112, true)]
+    [DataRow(VolumeKind.Fixed, 5, false)]
+    [DataRow(VolumeKind.Network, 5, false)]
+    [DataRow(VolumeKind.Unknown, 21, false)]
+    public void Volume_NotReadyClassification_DoesNotHideUnexpectedReadErrors(VolumeKind kind, int error, bool expected) =>
+        Assert.AreEqual(expected, VolumeProvider.IsExpectedNotReady(kind, error));
+
+    [TestMethod]
     public async Task SignaledFailure_BeforeFirstSuccess_IndependentSource_AndSecondStreak()
     {
         var cpu = new SignalingCpuProvider([true, true, true, false, true, true, true, false]);
@@ -131,7 +168,7 @@ public sealed class ProviderAvailabilityTests
         Assert.AreEqual(0.0, Field("_current").GetValue(gauge));
         Assert.IsTrue((bool)Field("_isComplete").GetValue(gauge)!);
         Assert.AreEqual(originalSize, gauge.RenderSize);
-        gauge.Value = 62;
+        gauge.UpdateTarget(62, animate: true); // Exercise recovered=true while ordinary changes would animate.
         Assert.AreEqual(62.0, Field("_current").GetValue(gauge));
         Assert.AreEqual(62.0, clip.Rect.Width);
         Assert.IsTrue((bool)Field("_isComplete").GetValue(gauge)!);

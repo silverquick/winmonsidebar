@@ -3,6 +3,22 @@ using Microsoft.Win32.SafeHandles;
 
 namespace Monitor.Windows.Native;
 
+public enum PdhReadStatus { Success, WarmingUp, Failed }
+
+internal static class PdhReadHealth
+{
+    internal static PdhReadStatus Classify(uint status, bool warmingUp) =>
+        status is 0 or 1 ? PdhReadStatus.Success :
+        warmingUp && (status is Pdh.PDH_INVALID_DATA or Pdh.PDH_NO_DATA or Pdh.PDH_CSTATUS_INVALID_DATA)
+            ? PdhReadStatus.WarmingUp : PdhReadStatus.Failed;
+
+    internal static PdhReadStatus ClassifyApi(uint status, bool warmingUp) =>
+        status == 1 ? PdhReadStatus.Failed : Classify(status, warmingUp);
+
+    internal static bool RequiredFailed(bool present, PdhReadStatus status, bool alternateAvailable = false) =>
+        present && status == PdhReadStatus.Failed && !alternateAvailable;
+}
+
 /// <summary>One value read from a wildcard-expanded PDH counter, e.g. one CPU core or one disk instance.</summary>
 public readonly record struct PdhCounterItem(string InstanceName, double Value);
 
@@ -11,11 +27,13 @@ public readonly ref struct PdhItemSpan
 {
     public ReadOnlySpan<char> InstanceName { get; }
     public double Value { get; }
+    public PdhReadStatus ReadStatus { get; }
 
-    public PdhItemSpan(ReadOnlySpan<char> instanceName, double value)
+    public PdhItemSpan(ReadOnlySpan<char> instanceName, double value, PdhReadStatus readStatus = PdhReadStatus.Success)
     {
         InstanceName = instanceName;
         Value = value;
+        ReadStatus = readStatus;
     }
 }
 
@@ -23,12 +41,14 @@ public readonly ref struct PdhItemSpan
 public ref struct PdhCounterEnumerator
 {
     private readonly IntPtr _buffer;
+    private readonly PdhMultiCounter? _owner;
     private readonly int _itemCount;
     private int _index;
     private PdhItemSpan _current;
 
-    internal PdhCounterEnumerator(IntPtr buffer, int itemCount)
+    internal PdhCounterEnumerator(IntPtr buffer, int itemCount, PdhMultiCounter? owner = null)
     {
+        _owner = owner;
         _buffer = buffer;
         _itemCount = itemCount;
         _index = -1;
@@ -48,8 +68,10 @@ public ref struct PdhCounterEnumerator
                 ReadOnlySpan<char> name = pItem->szName == IntPtr.Zero
                     ? ReadOnlySpan<char>.Empty
                     : MemoryMarshal.CreateReadOnlySpanFromNullTerminated((char*)pItem->szName);
+                PdhReadStatus readStatus = _owner?.RecordItemStatus(pItem->FmtValue.CStatus)
+                    ?? PdhReadHealth.Classify(pItem->FmtValue.CStatus, warmingUp: false);
                 double val = PdhCounter.IsErrorStatus(pItem->FmtValue.CStatus) ? 0.0 : pItem->FmtValue.doubleValue;
-                _current = new PdhItemSpan(name, val);
+                _current = new PdhItemSpan(name, val, readStatus);
                 return true;
             }
         }
@@ -79,10 +101,19 @@ internal sealed class SafePdhQueryHandle : SafeHandleZeroOrMinusOneIsInvalid
 /// <summary>A single-instance PDH counter (e.g. "\Processor Information(_Total)\% Processor Utility").</summary>
 public sealed class PdhCounter
 {
+    internal delegate uint GetValueFunc(IntPtr handle, uint format, out uint type, out PDH_FMT_COUNTERVALUE value);
+    private readonly GetValueFunc _getValue;
+    private int _readAttempts;
+    internal PdhQuery? Query { get; set; }
+    public PdhReadStatus LastReadStatus { get; private set; }
+    public bool LastReadFailed => LastReadStatus == PdhReadStatus.Failed;
     private readonly IntPtr _handle;
 
-    internal PdhCounter(string path, IntPtr handle)
+    internal PdhCounter(string path, IntPtr handle) : this(path, handle, Pdh.PdhGetFormattedCounterValue) { }
+
+    internal PdhCounter(string path, IntPtr handle, GetValueFunc getValue)
     {
+        _getValue = getValue;
         Path = path;
         _handle = handle;
     }
@@ -93,12 +124,14 @@ public sealed class PdhCounter
     public bool HasValue { get; private set; }
 
     /// <summary>Reads the current formatted value. Never throws; returns 0 and sets HasValue=false on any
-    /// PDH error status (including "not enough data yet" on the first sample after AddCounter).</summary>
+    /// PDH error status. LastReadStatus distinguishes initial warmup from a failed read.</summary>
     public double GetDouble()
     {
+        bool warmingUp = Query is null ? ++_readAttempts == 1 : Query.CollectionCount <= 1;
         try
         {
-            uint status = Pdh.PdhGetFormattedCounterValue(_handle, Pdh.PDH_FMT_DOUBLE | Pdh.PDH_FMT_NOCAP100, out _, out PDH_FMT_COUNTERVALUE value);
+            uint status = _getValue(_handle, Pdh.PDH_FMT_DOUBLE | Pdh.PDH_FMT_NOCAP100, out _, out PDH_FMT_COUNTERVALUE value);
+            LastReadStatus = status != 0 ? PdhReadHealth.ClassifyApi(status, warmingUp) : PdhReadHealth.Classify(value.CStatus, warmingUp);
             if (status != 0 || IsErrorStatus(value.CStatus))
             {
                 HasValue = false;
@@ -111,18 +144,50 @@ public sealed class PdhCounter
         catch
         {
             HasValue = false;
+            LastReadStatus = PdhReadStatus.Failed;
             return 0.0;
         }
     }
 
     internal static bool IsErrorStatus(uint cstatus)
-        => cstatus == Pdh.PDH_INVALID_DATA || cstatus == Pdh.PDH_NO_DATA || cstatus == Pdh.PDH_CALC_NEGATIVE_DENOMINATOR;
+        => cstatus is not (Pdh.PDH_CSTATUS_VALID_DATA or Pdh.PDH_CSTATUS_NEW_DATA);
 }
 
 /// <summary>A wildcard-instance PDH counter (e.g. "\Processor Information(*)\% Processor Utility" or
 /// "\PhysicalDisk(*)\% Disk Time"), returning one value per matched instance.</summary>
 public sealed class PdhMultiCounter : IDisposable
 {
+    private int _readAttempts;
+    private bool _warmingUp;
+    internal PdhQuery? Query { get; set; }
+    public PdhReadStatus LastReadStatus { get; private set; }
+    public bool LastReadFailed => LastReadStatus == PdhReadStatus.Failed;
+
+    public bool LastApiReadFailed { get; private set; }
+
+    internal PdhReadStatus RecordItemStatus(uint status)
+    {
+        PdhReadStatus itemStatus = PdhReadHealth.Classify(status, _warmingUp);
+        if (itemStatus > LastReadStatus) LastReadStatus = itemStatus;
+        return itemStatus;
+    }
+
+    private PdhCounterEnumerator Empty(uint status)
+    {
+        _itemCount = 0;
+        LastReadStatus = PdhReadHealth.ClassifyApi(status, _warmingUp);
+        LastApiReadFailed = LastReadFailed;
+        return new PdhCounterEnumerator(IntPtr.Zero, 0);
+    }
+
+    private PdhCounterEnumerator Values(uint itemCount)
+    {
+        _itemCount = itemCount;
+        LastReadStatus = PdhReadStatus.Success;
+        LastApiReadFailed = false;
+        return new PdhCounterEnumerator(_buffer, (int)itemCount, this);
+    }
+
     internal delegate uint PdhGetCounterArrayFunc(IntPtr hCounter, uint dwFormat, ref uint lpdwBufferSize, ref uint lpdwItemCount, IntPtr itemBuffer);
 
     private readonly IntPtr _handle;
@@ -177,9 +242,10 @@ public sealed class PdhMultiCounter : IDisposable
     /// <summary>Reads all current instance values without string or array allocations by returning a ref-struct enumerator.</summary>
     public PdhCounterEnumerator Enumerate()
     {
+        _warmingUp = Query is null ? ++_readAttempts == 1 : Query.CollectionCount <= 1;
         if (_disposed || _handle == IntPtr.Zero)
         {
-            return new PdhCounterEnumerator(IntPtr.Zero, 0);
+            return Empty(Pdh.PDH_INVALID_ARGUMENT);
         }
 
         const uint format = Pdh.PDH_FMT_DOUBLE | Pdh.PDH_FMT_NOCAP100;
@@ -198,14 +264,12 @@ public sealed class PdhMultiCounter : IDisposable
 
                     if (status == 0)
                     {
-                        _itemCount = itemCount;
-                        return new PdhCounterEnumerator(_buffer, (int)itemCount);
+                        return Values(itemCount);
                     }
 
                     if (status != Pdh.PDH_MORE_DATA && status != Pdh.PDH_INVALID_ARGUMENT)
                     {
-                        _itemCount = 0;
-                        return new PdhCounterEnumerator(IntPtr.Zero, 0);
+                        return Empty(status);
                     }
 
                     // Insufficient existing buffer: DO NOT trust suppliedSize.
@@ -223,8 +287,7 @@ public sealed class PdhMultiCounter : IDisposable
 
                 if (probeStatus != Pdh.PDH_MORE_DATA || requiredSize == 0)
                 {
-                    _itemCount = 0;
-                    return new PdhCounterEnumerator(IntPtr.Zero, 0);
+                    return Empty(probeStatus == Pdh.PDH_MORE_DATA ? Pdh.PDH_INVALID_ARGUMENT : probeStatus);
                 }
 
                 _buffer = Marshal.AllocHGlobal((int)requiredSize);
@@ -236,8 +299,7 @@ public sealed class PdhMultiCounter : IDisposable
 
                 if (fetchStatus == 0)
                 {
-                    _itemCount = fetchItemCount;
-                    return new PdhCounterEnumerator(_buffer, (int)fetchItemCount);
+                    return Values(fetchItemCount);
                 }
 
                 if (fetchStatus == Pdh.PDH_MORE_DATA || fetchStatus == Pdh.PDH_INVALID_ARGUMENT)
@@ -255,12 +317,10 @@ public sealed class PdhMultiCounter : IDisposable
                 Marshal.FreeHGlobal(_buffer);
                 _buffer = IntPtr.Zero;
                 _bufferCapacity = 0;
-                _itemCount = 0;
-                return new PdhCounterEnumerator(IntPtr.Zero, 0);
+                return Empty(fetchStatus);
             }
 
-            _itemCount = 0;
-            return new PdhCounterEnumerator(IntPtr.Zero, 0);
+            return Empty(Pdh.PDH_INVALID_ARGUMENT);
         }
         catch
         {
@@ -270,8 +330,7 @@ public sealed class PdhMultiCounter : IDisposable
                 _buffer = IntPtr.Zero;
                 _bufferCapacity = 0;
             }
-            _itemCount = 0;
-            return new PdhCounterEnumerator(IntPtr.Zero, 0);
+            return Empty(Pdh.PDH_INVALID_ARGUMENT);
         }
     }
 
@@ -292,6 +351,7 @@ public sealed class PdhMultiCounter : IDisposable
 /// paths work regardless of the OS display language.</summary>
 public sealed class PdhQuery : IDisposable
 {
+    internal int CollectionCount { get; private set; }
     private readonly SafePdhQueryHandle _handle;
     private readonly List<PdhMultiCounter> _multiCounters = new();
     private bool _disposed;
@@ -337,7 +397,7 @@ public sealed class PdhQuery : IDisposable
                 return null;
             }
 
-            return new PdhCounter(englishPath, counterHandle);
+            return new PdhCounter(englishPath, counterHandle) { Query = this };
         }
         catch
         {
@@ -362,7 +422,7 @@ public sealed class PdhQuery : IDisposable
                 return null;
             }
 
-            var counter = new PdhMultiCounter(englishPath, counterHandle);
+            var counter = new PdhMultiCounter(englishPath, counterHandle) { Query = this };
             _multiCounters.Add(counter);
             return counter;
         }
@@ -376,6 +436,7 @@ public sealed class PdhQuery : IDisposable
     /// meaningful value starting from the second Collect() call. Returns false (never throws) on failure.</summary>
     public bool Collect()
     {
+        CollectionCount++;
         if (_disposed || _handle.IsInvalid)
         {
             return false;
@@ -383,7 +444,7 @@ public sealed class PdhQuery : IDisposable
 
         try
         {
-            return Pdh.PdhCollectQueryData(_handle.DangerousGetHandle()) == 0;
+            return PdhReadHealth.ClassifyApi(Pdh.PdhCollectQueryData(_handle.DangerousGetHandle()), CollectionCount == 1) != PdhReadStatus.Failed;
         }
         catch
         {
