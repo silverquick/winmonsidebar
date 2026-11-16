@@ -58,7 +58,7 @@ dotnet build WindowsMonitor.sln -c Debug
 dotnet publish src\Monitor.App -c Release -r win-x64 --self-contained -p:PublishSingleFile=true -o out
 ```
 
-`out\Monitor.App.exe`（約 130MB）に .NET ランタイムごと同梱される。WPF・SkiaSharp 等の
+`out\Monitor.App.exe`（約 130MB）に .NET ランタイムごと同梱される。WPF 等の
 ネイティブ DLL（`wpfgfx_cor3.dll` / `PresentationNative_cor3.dll` / `D3DCompiler_47_cor3.dll` 等）は
 単一ファイルに埋め込めないため exe と同じ場所に並ぶ。`out\` の内容を丸ごと配置すれば
 .NET のインストールなしで動く（`*.pdb` は配布に不要）。
@@ -349,12 +349,8 @@ winmonsidebar/
 
 ## 依存関係の方針
 
-外部 NuGet 依存は **`LibreHardwareMonitorLib` 0.9.6（MPL-2.0）の 1 つだけ**。しかも
-`Monitor.Optional.Lhm` プロジェクトからしか参照しない。他のプロジェクトは Windows 標準 DLL と
-ベンダー DLL への P/Invoke だけで完結している。
-
-`System.Management`（WMI）も使っていない。メモリのモジュール情報は SMBIOS を直接読み、
-ディスク情報は IOCTL で取っている。
+直接の外部 NuGet 依存は `Monitor.Optional.Lhm` が参照する **`LibreHardwareMonitorLib` 0.9.6（MPL-2.0）の 1 つだけ**。
+他のプロジェクト（`Monitor.Core` / `Monitor.Windows` / `Monitor.Vendors.Nvidia` / `Monitor.App`）は外部 NuGet や `System.Management`（WMI）を直接使わず、Windows 標準 DLL とベンダー DLL への P/Invoke だけで完結している（なお `LibreHardwareMonitorLib` 自体は推移的依存として `DiskInfoToolkit`・`HidSharp`・`RAMSPDToolkit-NDD`・`Mono.Posix.NETStandard`・`System.Management` 等を含む）。メモリのモジュール情報は SMBIOS を直接読み、ディスク情報は IOCTL で取っている。
 
 これは「出所不明な依存を持ち込まない」ためと、WMI 経由の値がしばしば壊れている
 （例: `Win32_VideoController.AdapterRAM` は 4GB で頭打ちになる）ためでもある。
@@ -392,7 +388,9 @@ winmonsidebar/
 VRM の欄に入る。
 
 `HiddenSensors` は表示しない温度センサーの一覧。生のセンサー名または LHM の識別子を指定する。
-照合は大文字小文字を区別せず、別名適用前の名前で判定する。空欄は無視される。
+照合は大文字小文字を区別せず、別名適用前の名前で判定する。空欄は無視される（上限 128 件）。
+
+`TopProcessCount` は `1`〜`16` の範囲にクランプされ、`Edge` に不正値が指定された場合は `"Right"` になる。`settings.json` の JSON が破損していた場合は `settings.json.bak` へ移動（古い `.bak` は上書き）してから既定値へフォールバックする。設定・ログの親ディレクトリからユーザープロファイル直下までの全パス成分（`WinMonSidebar`、`%LOCALAPPDATA%` とその祖先）と、最終ファイル・設定の `.tmp`・`.bak` がリパースポイント（ジャンクション／シンボリックリンク）なら読み書き・退避を拒否する。検証後から使用までの差し替え競合（TOCTOU）は防げない（B-19）。
 
 サイドバーを右クリックすると「最前面表示」「管理者で再起動」「幅をリセット」「終了」が出る。
 
@@ -416,6 +414,13 @@ VRM の欄に入る。
 
 二重登録を防ぐため、名前付き Mutex `Global\WinMonSidebar_SingleInstance` で単一インスタンス化
 している（AppBar が 2 つ登録されると作業領域が二重に削られる）。
+
+解除時は `ABM_REMOVE` を最初に試み、例外時もタイマー停止・フック解除を続ける。
+Dispatcher 外から呼ばれた場合、その Dispatcher に後片付けを予約し、実行までは参照を保持する。
+
+計測の終了待機は `MetricsHubOptions.DisposeTimeout`（既定 2 秒）をループ停止と全プロバイダ破棄の合計期限とする。
+期限を過ぎても初期化・Sample の実行中には破棄せず、ループ完了後に一度だけバックグラウンドで破棄する。
+破棄自体が停止しても終了待機は期限で戻る。UI は期限まで同期的に待ち、永久停止した処理の回収やプロセス終了後の後片付けは保証しない（B-15）。
 
 ### フルスクリーン検出は ABN_FULLSCREENAPP だけに頼れない
 
@@ -506,4 +511,4 @@ AppBar API が扱う矩形は物理ピクセル、WPF の `Window.Left/Top/Width
 
 ## ライセンス
 
-未定。`LibreHardwareMonitorLib` は MPL-2.0。
+MIT License（[LICENSE](LICENSE)）。サードパーティ製コンポーネントの表記は [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) を参照（`LibreHardwareMonitorLib` は MPL-2.0）。

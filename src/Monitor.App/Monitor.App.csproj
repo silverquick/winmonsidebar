@@ -9,6 +9,11 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <None Include="..\..\LICENSE" Link="LICENSE" CopyToPublishDirectory="PreserveNewest" />
+    <None Include="..\..\THIRD-PARTY-NOTICES.md" Link="THIRD-PARTY-NOTICES.md" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\Monitor.Core\Monitor.Core.csproj" />
     <ProjectReference Include="..\Monitor.Windows\Monitor.Windows.csproj" />
     <ProjectReference Include="..\Monitor.Vendors.Nvidia\Monitor.Vendors.Nvidia.csproj" />
