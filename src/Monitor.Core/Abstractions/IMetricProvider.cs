@@ -17,6 +17,9 @@ public interface IMetricProvider<T> : IDisposable
     /// <summary>直近の Sample が既定値・キャッシュへ退避したか。未対応・非搭載は失敗に含めない。</summary>
     bool LastSampleFailed => false;
 
+    /// <summary>失敗時も Sample の返り値に個別の正常値・保持値・削除を反映済みなら true。</summary>
+    bool PreservesPartialSamplesOnFailure => false;
+
     /// <summary>
     /// 最初の Sample() より前に一度だけ呼ばれる。例外を投げてはならない。
     /// 未対応・非搭載なら IsAvailable を false にして戻る。

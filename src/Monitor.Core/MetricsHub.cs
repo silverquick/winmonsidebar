@@ -21,6 +21,9 @@ public sealed class MetricsHubOptions
 
     public int TopProcessCount { get; init; } = 8;
 
+    /// <summary>ループ停止と破棄を待つ合計の最大時間。期限後も後片付けはバックグラウンドで続ける。</summary>
+    public TimeSpan DisposeTimeout { get; init; } = TimeSpan.FromSeconds(2);
+
     /// <summary>
     /// 診断ログの出力先（メッセージ, 例外）。バックグラウンドスレッドから呼ばれるため、実装はスレッドセーフであること。
     /// 同じ失敗が続く間は連打せず、失敗開始時と回復時にだけ呼ばれる。sink 自体の例外は hub 内で握りつぶす。
@@ -49,6 +52,8 @@ public sealed class MetricsHub : IAsyncDisposable
 
     private CancellationTokenSource? _cts;
     private Task? _loopTask;
+    private readonly object _lifecycleGate = new();
+    private Task? _disposeTask;
     private volatile MetricsSnapshot? _latest;
     private int _processSamplingEnabled = 1;
     private readonly IDetailSamplingProvider? _cpuDetails;
@@ -147,19 +152,23 @@ public sealed class MetricsHub : IAsyncDisposable
 
     public void Start()
     {
-        if (_cts is not null)
+        lock (_lifecycleGate)
         {
-            return;
+            if (_cts is not null || _disposeTask is not null) return;
+            var cts = new CancellationTokenSource();
+            _cts = cts;
+            _loopTask = Task.Run(() => RunLoopAsync(cts.Token));
         }
-
-        _cts = new CancellationTokenSource();
-        _loopTask = Task.Run(() => RunLoopAsync(_cts.Token));
     }
 
     private async Task RunLoopAsync(CancellationToken token)
     {
         // PDH の初期化などは遅い可能性があるため、UI スレッドをブロックしないようここで行う。
-        InitializeAll();
+        InitializeAll(token);
+        if (token.IsCancellationRequested)
+        {
+            return;
+        }
 
         try
         {
@@ -308,7 +317,8 @@ public sealed class MetricsHub : IAsyncDisposable
 
                 TimeSpan elapsed = stopwatch.Elapsed;
                 stopwatch.Restart();
-                last = SampleSafe(_volumes, _volumeFailures, elapsed, last);
+                // VolumeProvider already preserves each failed drive's cache and prunes disconnected drives.
+                last = SampleSafe(_volumes, _volumeFailures, elapsed, last, useValueOnFailure: _volumes.PreservesPartialSamplesOnFailure);
                 Publish(volumes: last, updatedSources: MetricSources.Volumes, unavailableSources: Unavailable(_volumeFailures, MetricSources.Volumes));
                 _volumeLaneFailures.RecordSuccess();
             }
@@ -380,7 +390,7 @@ public sealed class MetricsHub : IAsyncDisposable
         }
     }
 
-    private T SampleSafe<T>(IMetricProvider<T> provider, FailureTracker failures, TimeSpan elapsed, T fallback)
+    private T SampleSafe<T>(IMetricProvider<T> provider, FailureTracker failures, TimeSpan elapsed, T fallback, bool useValueOnFailure = false)
     {
         try
         {
@@ -394,7 +404,7 @@ public sealed class MetricsHub : IAsyncDisposable
             if (provider.LastSampleFailed)
             {
                 failures.RecordFailure();
-                return fallback;
+                return useValueOnFailure ? value : fallback;
             }
             failures.RecordSuccess();
             return value;
@@ -409,15 +419,23 @@ public sealed class MetricsHub : IAsyncDisposable
     private static MetricSources Unavailable(FailureTracker failures, MetricSources source) =>
         failures.IsUnavailable ? source : MetricSources.None;
 
-    private void InitializeAll()
+    private void InitializeAll(CancellationToken token)
     {
+        if (token.IsCancellationRequested) return;
         TryInitialize(_cpu);
+        if (token.IsCancellationRequested) return;
         TryInitialize(_memory);
+        if (token.IsCancellationRequested) return;
         TryInitialize(_disk);
+        if (token.IsCancellationRequested) return;
         TryInitialize(_network);
+        if (token.IsCancellationRequested) return;
         TryInitialize(_gpu);
+        if (token.IsCancellationRequested) return;
         TryInitialize(_processes);
+        if (token.IsCancellationRequested) return;
         TryInitialize(_thermal);
+        if (token.IsCancellationRequested) return;
         TryInitialize(_volumes);
     }
 
@@ -449,47 +467,72 @@ public sealed class MetricsHub : IAsyncDisposable
 
     private static string ProviderLabel(object provider) => provider.GetType().Name;
 
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync()
     {
-        if (_cts is not null)
+        lock (_lifecycleGate)
         {
-            _cts.Cancel();
-
-            if (_loopTask is not null)
-            {
-                try
-                {
-                    await _loopTask.ConfigureAwait(false);
-                }
-                catch
-                {
-                    // ループ終了時の例外は無視する。
-                }
-            }
-
-            _cts.Dispose();
-            _cts = null;
+            return new ValueTask(_disposeTask ??= DisposeCoreAsync());
         }
+    }
 
-        DisposeProvider(_cpu);
-        DisposeProvider(_memory);
-        DisposeProvider(_disk);
-        DisposeProvider(_network);
-        DisposeProvider(_gpu);
-        DisposeProvider(_processes);
-        DisposeProvider(_thermal);
-        DisposeProvider(_volumes);
+    private async Task DisposeCoreAsync()
+    {
+        var deadline = Stopwatch.StartNew();
+        CancellationTokenSource? cts = _cts;
+        Task? loopTask = _loopTask;
+        Task cancellation = cts?.CancelAsync() ?? Task.CompletedTask;
+        // A single background owner waits for initialization and all lanes before teardown.
+        // Timing out stops only the caller's wait and never transfers resource ownership.
+        Task teardown = Task.Run(async () =>
+        {
+            try
+            {
+                await cancellation.ConfigureAwait(false);
+            }
+            catch (Exception ex) { LogSafe("MetricsHub: キャンセルに失敗しました", ex); }
+            try
+            {
+                if (loopTask is not null) await loopTask.ConfigureAwait(false);
+            }
+            catch (Exception ex) { LogSafe("MetricsHub: 終了時にループが失敗しました", ex); }
+            try
+            {
+                DisposeProvider(_cpu);
+                DisposeProvider(_memory);
+                DisposeProvider(_disk);
+                DisposeProvider(_network);
+                DisposeProvider(_gpu);
+                DisposeProvider(_processes);
+                DisposeProvider(_thermal);
+                DisposeProvider(_volumes);
+            }
+            finally
+            {
+                try { cts?.Dispose(); }
+                catch (Exception ex) { LogSafe("MetricsHub: CTS の破棄に失敗しました", ex); }
+            }
+        });
+        // Also observe failures if the caller's deadline expires first.
+        _ = teardown.ContinueWith(t => LogSafe("MetricsHub: 後片付けに失敗しました", t.Exception),
+            CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted, TaskScheduler.Default);
+        TimeSpan remaining = _options.DisposeTimeout - deadline.Elapsed;
+        try
+        {
+            if (remaining > TimeSpan.Zero) await teardown.WaitAsync(remaining).ConfigureAwait(false);
+        }
+        catch (TimeoutException) { /* The single teardown owner continues in the background. */ }
     }
 
     /// <summary>テスト用の MetricsHub を生成する。指定しなかったプロバイダは固定値を返すダミーになる。</summary>
     internal static MetricsHub CreateForTest(
         MetricsHubOptions? options = null,
         IMetricProvider<CpuSnapshot>? cpu = null,
-        IMetricProvider<DiskSnapshot>? disk = null) =>
+        IMetricProvider<DiskSnapshot>? disk = null,
+        IMetricProvider<MemorySnapshot>? memory = null) =>
         new(
             options ?? new MetricsHubOptions(),
             cpu ?? new NullMetricProvider<CpuSnapshot>(CpuSnapshot.Empty),
-            new NullMetricProvider<MemorySnapshot>(MemorySnapshot.Empty),
+            memory ?? new NullMetricProvider<MemorySnapshot>(MemorySnapshot.Empty),
             disk ?? new NullMetricProvider<DiskSnapshot>(DiskSnapshot.Empty),
             new NullMetricProvider<NetworkSnapshot>(NetworkSnapshot.Empty),
             new NullMetricProvider<GpuSnapshot>(GpuSnapshot.Empty),
@@ -513,15 +556,15 @@ public sealed class MetricsHub : IAsyncDisposable
             updatedSources: MetricSources.All, unavailableSources: snapshot.UnavailableSources);
     }
 
-    private static void DisposeProvider<T>(IMetricProvider<T> provider)
+    private void DisposeProvider<T>(IMetricProvider<T> provider)
     {
         try
         {
             provider.Dispose();
         }
-        catch
+        catch (Exception ex)
         {
-            // Dispose 中の例外は無視する。
+            LogSafe($"MetricsHub: {ProviderLabel(provider)} の破棄に失敗しました", ex);
         }
     }
 

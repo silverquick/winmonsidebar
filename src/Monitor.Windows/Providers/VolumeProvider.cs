@@ -26,6 +26,7 @@ public sealed partial class VolumeProvider : IMetricProvider<IReadOnlyList<Volum
     private DateTime _lastRefreshStartUtc = DateTime.MinValue;
     private readonly object _cacheGate = new();
     private bool _refreshFailed;
+    private bool _disposed;
     internal readonly record struct VolumeReadResult(VolumeSnapshot Snapshot, bool Failed);
     internal Func<string, VolumeReadResult>? ReadVolumeForTest { get; set; }
     internal Func<string[]>? ReadDriveNamesForTest { get; set; }
@@ -33,6 +34,7 @@ public sealed partial class VolumeProvider : IMetricProvider<IReadOnlyList<Volum
     private volatile IReadOnlyList<VolumeSnapshot> _cache = Array.Empty<VolumeSnapshot>();
 
     public string Name => "Volumes";
+    public bool PreservesPartialSamplesOnFailure => true;
 
     public bool IsAvailable { get; private set; }
 
@@ -40,8 +42,12 @@ public sealed partial class VolumeProvider : IMetricProvider<IReadOnlyList<Volum
 
     public void Initialize()
     {
-        _cts = new CancellationTokenSource();
-        IsAvailable = true;
+        lock (_cacheGate)
+        {
+            _disposed = false;
+            _cts = new CancellationTokenSource();
+            IsAvailable = true;
+        }
 
         // Kick off the first refresh but never wait on it here: Initialize() runs sequentially with
         // every other provider's Initialize() on MetricsHub's startup path, and blocking here would
@@ -54,6 +60,12 @@ public sealed partial class VolumeProvider : IMetricProvider<IReadOnlyList<Volum
         TriggerRefreshIfDue(force: false);
         lock (_cacheGate)
         {
+            if (_disposed)
+            {
+                LastSampleFailed = false;
+                return Array.Empty<VolumeSnapshot>();
+            }
+
             LastSampleFailed = _refreshFailed;
             return _cache;
         }
@@ -61,11 +73,26 @@ public sealed partial class VolumeProvider : IMetricProvider<IReadOnlyList<Volum
 
     public void Dispose()
     {
-        if (_cts is not null)
+        CancellationTokenSource? cts;
+        Task? refreshTask;
+
+        lock (_cacheGate)
+        {
+            _disposed = true;
+            cts = _cts;
+            refreshTask = _refreshTask;
+            _cts = null;
+            _refreshTask = null;
+            _cache = Array.Empty<VolumeSnapshot>();
+            _refreshFailed = false;
+            IsAvailable = false;
+        }
+
+        if (cts is not null)
         {
             try
             {
-                _cts.Cancel();
+                cts.Cancel();
             }
             catch
             {
@@ -74,7 +101,7 @@ public sealed partial class VolumeProvider : IMetricProvider<IReadOnlyList<Volum
 
             try
             {
-                _refreshTask?.Wait(TimeSpan.FromSeconds(2));
+                refreshTask?.Wait(TimeSpan.FromSeconds(2));
             }
             catch
             {
@@ -83,13 +110,15 @@ public sealed partial class VolumeProvider : IMetricProvider<IReadOnlyList<Volum
                 // do, matching this codebase's "Dispose 中の例外は無視する" convention elsewhere.
             }
 
-            _cts.Dispose();
-            _cts = null;
+            try
+            {
+                cts.Dispose();
+            }
+            catch
+            {
+                // ignore
+            }
         }
-
-        _refreshTask = null;
-        _cache = Array.Empty<VolumeSnapshot>();
-        IsAvailable = false;
     }
 
     /// <summary>Starts a background refresh if none is currently running and either <paramref
@@ -97,31 +126,44 @@ public sealed partial class VolumeProvider : IMetricProvider<IReadOnlyList<Volum
     /// Never blocks the caller.</summary>
     private void TriggerRefreshIfDue(bool force)
     {
-        CancellationTokenSource? cts = _cts;
-        if (cts is null || cts.IsCancellationRequested)
+        lock (_cacheGate)
         {
-            return;
-        }
+            if (_disposed)
+            {
+                return;
+            }
 
-        if (_refreshTask is { IsCompleted: false })
-        {
-            return;
-        }
+            CancellationTokenSource? cts = _cts;
+            if (cts is null || cts.IsCancellationRequested)
+            {
+                return;
+            }
 
-        if (!force && DateTime.UtcNow - _lastRefreshStartUtc < RefreshInterval)
-        {
-            return;
-        }
+            if (_refreshTask is { IsCompleted: false })
+            {
+                return;
+            }
 
-        _lastRefreshStartUtc = DateTime.UtcNow;
-        CancellationToken token = cts.Token;
-        _refreshTask = Task.Run(() => RefreshAsync(token), token);
+            if (!force && DateTime.UtcNow - _lastRefreshStartUtc < RefreshInterval)
+            {
+                return;
+            }
+
+            _lastRefreshStartUtc = DateTime.UtcNow;
+            CancellationToken token = cts.Token;
+            _refreshTask = Task.Run(() => RefreshAsync(token), token);
+        }
     }
 
     private void PublishCache(IReadOnlyList<VolumeSnapshot> cache, bool refreshSucceeded)
     {
         lock (_cacheGate)
         {
+            if (_disposed)
+            {
+                return;
+            }
+
             _cache = cache;
             if (refreshSucceeded) _refreshFailed = false;
         }
@@ -164,10 +206,19 @@ public sealed partial class VolumeProvider : IMetricProvider<IReadOnlyList<Volum
             return;
         }
 
+        var activeLetters = new HashSet<string>(driveNames.Length, StringComparer.OrdinalIgnoreCase);
+        for (int i = 0; i < driveNames.Length; i++)
+        {
+            activeLetters.Add(driveNames[i].TrimEnd('\\'));
+        }
+
         var working = new Dictionary<string, VolumeSnapshot>(StringComparer.OrdinalIgnoreCase);
         foreach (VolumeSnapshot existing in _cache)
         {
-            working[existing.DriveLetter] = existing;
+            if (activeLetters.Contains(existing.DriveLetter))
+            {
+                working[existing.DriveLetter] = existing;
+            }
         }
 
         bool refreshSucceeded = true;
@@ -317,9 +368,9 @@ public sealed partial class VolumeProvider : IMetricProvider<IReadOnlyList<Volum
 
     internal static bool IsExpectedNotReady(VolumeKind kind, int error) => kind switch
     {
-        VolumeKind.Network => error is 2 or 3 or 15 or 21 or 53 or 55 or 64 or 67 or 121 or 1167 or
-            1201 or 1222 or 1231 or 1232 or 1236 or 1460 or 2250,
-        VolumeKind.Removable or VolumeKind.CdRom => error is 21 or 1112,
+        VolumeKind.Network => error is 2 or 3 or 5 or 15 or 21 or 53 or 55 or 64 or 67 or 121 or 1167 or
+            1201 or 1326 or 1222 or 1231 or 1232 or 1236 or 1460 or 2250,
+        VolumeKind.Removable or VolumeKind.CdRom => error is 5 or 21 or 53 or 67 or 1112 or 1231 or 1326,
         _ => false,
     };
 

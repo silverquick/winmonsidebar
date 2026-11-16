@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using Monitor.Core;
 using Monitor.Core.Abstractions;
@@ -204,6 +205,45 @@ public sealed class MetricsHubResilienceTests
         Assert.IsInstanceOfType<InvalidOperationException>(initLogs[0].Exception);
     }
 
+    [TestMethod]
+    [DataRow("Initialize")]
+    [DataRow("Sample")]
+    [DataRow("Dispose")]
+    public async Task DisposeAsync_BlockedOperation_RespectsDeadlineAndDefersExactlyOnce(string operation)
+    {
+        var cpu = new BarrierCpuProvider(operation);
+        var memory = new InitializationCountingMemoryProvider();
+        var hub = MetricsHub.CreateForTest(new MetricsHubOptions
+        {
+            FastInterval = TimeSpan.FromMilliseconds(5),
+            ProcessInterval = TimeSpan.FromHours(1),
+            ThermalInterval = TimeSpan.FromHours(1),
+            VolumeInterval = TimeSpan.FromHours(1),
+            DisposeTimeout = TimeSpan.FromMilliseconds(150),
+        }, cpu: cpu, memory: memory);
+        hub.Start();
+        try
+        {
+            if (operation != "Dispose") await cpu.Entered.Task.WaitAsync(WaitTimeout);
+            var sw = Stopwatch.StartNew();
+            Task stopping = hub.DisposeAsync().AsTask();
+            if (operation == "Dispose") await cpu.Entered.Task.WaitAsync(WaitTimeout);
+            await stopping.WaitAsync(TimeSpan.FromMilliseconds(400));
+            Assert.IsTrue(sw.Elapsed < TimeSpan.FromMilliseconds(400), $"Elapsed: {sw.Elapsed}");
+            Assert.AreEqual(operation == "Dispose" ? 1 : 0, cpu.DisposeCount);
+            Assert.IsFalse(cpu.Overlapped);
+            // Repeated callers share the same owner, including after the timeout.
+            await hub.DisposeAsync();
+        }
+        finally { cpu.Release.Set(); }
+        await cpu.Disposed.Task.WaitAsync(WaitTimeout);
+        Assert.AreEqual(1, cpu.DisposeCount);
+        Assert.IsFalse(cpu.Overlapped, "Disposal must follow Initialize/Sample exit.");
+        if (operation == "Initialize") Assert.AreEqual(0, memory.Initializations, "Cancellation skips later initializers.");
+        await hub.DisposeAsync();
+        Assert.AreEqual(1, cpu.DisposeCount);
+    }
+
     private static MetricsSnapshot CreateEmptySnapshot() => new(
         Timestamp: DateTimeOffset.UtcNow,
         Cpu: CpuSnapshot.Empty,
@@ -252,6 +292,50 @@ public sealed class MetricsHubResilienceTests
         public void Initialize() => throw new InvalidOperationException("initialize failure");
         public CpuSnapshot Sample(TimeSpan elapsed) => CpuSnapshot.Empty;
         public void Dispose() { }
+    }
+
+    private sealed class InitializationCountingMemoryProvider : IMetricProvider<MemorySnapshot>
+    {
+        public int Initializations;
+        public string Name => "Memory";
+        public bool IsAvailable => true;
+        public void Initialize() => Interlocked.Increment(ref Initializations);
+        public MemorySnapshot Sample(TimeSpan elapsed) => MemorySnapshot.Empty;
+        public void Dispose() { }
+    }
+
+    private sealed class BarrierCpuProvider(string operation) : IMetricProvider<CpuSnapshot>
+    {
+        public readonly TaskCompletionSource Entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public readonly TaskCompletionSource Disposed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public readonly ManualResetEventSlim Release = new();
+        private int _active;
+        public int DisposeCount;
+        public bool Overlapped;
+        public string Name => "BarrierCpu";
+        public bool IsAvailable => true;
+        private void Block(string phase)
+        {
+            Interlocked.Increment(ref _active);
+            try
+            {
+                if (phase == operation)
+                {
+                    Entered.TrySetResult();
+                    Release.Wait();
+                }
+            }
+            finally { Interlocked.Decrement(ref _active); }
+        }
+        public void Initialize() => Block("Initialize");
+        public CpuSnapshot Sample(TimeSpan elapsed) { Block("Sample"); return CpuSnapshot.Empty; }
+        public void Dispose()
+        {
+            Interlocked.Increment(ref DisposeCount);
+            Overlapped |= Volatile.Read(ref _active) != 0;
+            if (operation == "Dispose") { Entered.TrySetResult(); Release.Wait(); }
+            Disposed.TrySetResult();
+        }
     }
 
     private sealed class FixedProvider<T>(T value) : IMetricProvider<T>

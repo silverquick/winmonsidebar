@@ -1,5 +1,6 @@
 using System.Windows;
 using System.Windows.Interop;
+using Monitor.App.Diagnostics;
 using Monitor.Windows.Native;
 
 namespace Monitor.App.Shell;
@@ -114,5 +115,17 @@ public class AppBarWindow : Window
 
     private void OnProcessExit(object? sender, EventArgs e) => _appBarHost.Unregister();
 
-    private void OnUnhandledException(object sender, UnhandledExceptionEventArgs e) => _appBarHost.Unregister();
+    private void OnUnhandledException(object sender, UnhandledExceptionEventArgs e)
+    {
+        if (e.ExceptionObject is Exception ex)
+        {
+            AppLog.Write("AppDomain.UnhandledException", ex);
+        }
+        else if (e.ExceptionObject is not null)
+        {
+            AppLog.Write($"AppDomain.UnhandledException: {e.ExceptionObject}");
+        }
+
+        _appBarHost.Unregister();
+    }
 }

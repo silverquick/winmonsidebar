@@ -1,11 +1,14 @@
 using System.Collections.Concurrent;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using LibreHardwareMonitor.Hardware;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using Monitor.Core;
 using Monitor.Core.Abstractions;
 using Monitor.Core.Models;
 using Monitor.Optional.Lhm;
+using Monitor.Vendors.Nvidia;
+using Monitor.Windows.Providers;
 
 namespace Monitor.App.Tests;
 
@@ -123,6 +126,24 @@ public sealed class LhmAvailabilityTests
         control.Update = () => throw new InvalidOperationException("hidden hardware");
         hidden.Sample(TimeSpan.FromSeconds(5));
         Assert.IsFalse(hidden.LastSampleFailed, "A hidden temperature must not become a representative failure.");
+    }
+
+    [TestMethod]
+    public void DefaultDllImportSearchPaths_IsSystem32_OnNativeAssemblies()
+    {
+        Assembly[] nativeAssemblies =
+        [
+            typeof(VolumeProvider).Assembly,
+            typeof(NvidiaGpuReading).Assembly,
+            typeof(LhmThermalProvider).Assembly,
+        ];
+
+        foreach (Assembly assembly in nativeAssemblies)
+        {
+            var attr = assembly.GetCustomAttribute<DefaultDllImportSearchPathsAttribute>();
+            Assert.IsNotNull(attr, $"{assembly.GetName().Name} should specify DefaultDllImportSearchPathsAttribute.");
+            Assert.AreEqual(DllImportSearchPath.System32, attr.Paths, $"{assembly.GetName().Name} should restrict P/Invoke search path to System32.");
+        }
     }
 
     private static (IHardware, HardwareProxy) Hardware(HardwareType type, params ISensor[] sensors)

@@ -324,4 +324,52 @@ public sealed class SmoothAnimationTests
         // 最大 0.1 秒でクランプされていること
         Assert.AreEqual(0.1, dt, 1e-9);
     }
+
+    [STATestMethod]
+    public void FrameAnimationClock_ControlThrows_RemovesFaultyControlAndContinuesOthers()
+    {
+        var throwing = new ThrowingAnimatableControl();
+        var healthy = new CountingAnimatableControl();
+
+        FrameAnimationClock.Register(throwing);
+        FrameAnimationClock.Register(healthy);
+        try
+        {
+            FrameAnimationClock.TickForTest(TimeSpan.FromSeconds(1));
+            Assert.AreEqual(1, throwing.Calls);
+            Assert.AreEqual(1, healthy.Calls);
+
+            // 2 回目のティックでは例外を出したコントロールは既に解除されていること
+            FrameAnimationClock.TickForTest(TimeSpan.FromSeconds(2));
+            Assert.AreEqual(1, throwing.Calls);
+            Assert.AreEqual(2, healthy.Calls);
+        }
+        finally
+        {
+            FrameAnimationClock.Unregister(throwing);
+            FrameAnimationClock.Unregister(healthy);
+        }
+    }
+
+    private sealed class ThrowingAnimatableControl : IAnimatableControl
+    {
+        public int Calls { get; private set; }
+
+        public bool OnAnimationFrame(double deltaSeconds)
+        {
+            Calls++;
+            throw new InvalidOperationException("animation failure");
+        }
+    }
+
+    private sealed class CountingAnimatableControl : IAnimatableControl
+    {
+        public int Calls { get; private set; }
+
+        public bool OnAnimationFrame(double deltaSeconds)
+        {
+            Calls++;
+            return true;
+        }
+    }
 }

@@ -148,13 +148,20 @@ public static class FrameAnimationClock
 
     private static void OnRendering(object? sender, EventArgs e)
     {
+        TimeSpan current = (e is RenderingEventArgs r) ? r.RenderingTime : TimeSpan.Zero;
+        OnRenderingCore(current);
+    }
+
+    internal static void TickForTest(TimeSpan renderingTime) => OnRenderingCore(renderingTime);
+
+    private static void OnRenderingCore(TimeSpan current)
+    {
         if (_activeControls.Count == 0)
         {
             EnsureUnsubscribed();
             return;
         }
 
-        TimeSpan current = (e is RenderingEventArgs r) ? r.RenderingTime : TimeSpan.Zero;
         if (!_throttler.TryStep(current, out double deltaSeconds))
         {
             // 最大 ~30fps に間引くため、規定インターバル未満のフレームはスキップ
@@ -165,7 +172,17 @@ public static class FrameAnimationClock
         for (int i = 0; i < _activeControls.Count; i++)
         {
             IAnimatableControl control = _activeControls[i];
-            bool continueAnimating = control.OnAnimationFrame(deltaSeconds);
+            bool continueAnimating;
+            try
+            {
+                continueAnimating = control.OnAnimationFrame(deltaSeconds);
+            }
+            catch
+            {
+                // 壊れたコントロールでクロック全体を止めず、対象だけ購読解除する。
+                continueAnimating = false;
+            }
+
             if (!continueAnimating)
             {
                 _pendingRemoval.Add(control);

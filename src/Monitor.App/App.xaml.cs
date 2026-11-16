@@ -1,6 +1,5 @@
 using System.Diagnostics;
 using System.Globalization;
-using System.Security.Principal;
 using System.Threading;
 using System.Windows;
 using System.Windows.Threading;
@@ -28,6 +27,7 @@ public partial class App : Application
     private bool _ownsSingleInstanceMutex;
     private MetricsHub? _hub;
     private SidebarWindow? _window;
+    private bool _startupCompleted;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -71,7 +71,7 @@ public partial class App : Application
         }
 
         AppLog.Write("startup: begin");
-        AppLog.Write($"startup: elevated={IsElevated()}");
+        AppLog.Write($"startup: elevated={LhmThermalProvider.IsRunningElevated()}");
 
         AppSettings settings = SettingsStore.Load();
 
@@ -91,6 +91,7 @@ public partial class App : Application
                 }
             },
         };
+        var thermalProvider = new LhmThermalProvider(settings.SensorAliases, settings.HiddenSensors);
         _hub = new MetricsHub(
             options,
             new CpuProvider(),
@@ -99,7 +100,7 @@ public partial class App : Application
             new NetworkProvider(),
             new GpuProvider(NvidiaVendorSensors.TryCreate),
             new ProcessProvider(options.TopProcessCount),
-            new LhmThermalProvider(settings.SensorAliases, settings.HiddenSensors),
+            thermalProvider,
             new VolumeProvider());
 
         // 温度・ファンは権限とハードウェアに強く依存し、取れないときの原因が画面からは分からない。
@@ -116,7 +117,7 @@ public partial class App : Application
             }
 
             AppLog.Write(
-                $"thermal: sampled={sampled} available={t.IsAvailable} elevated={t.IsElevated} source={t.Source} " +
+                $"thermal: sampled={sampled} available={t.IsAvailable} elevated={t.IsElevated} pawnio={thermalProvider.PawnIoStatus} source={t.Source} " +
                 $"cpuPackage={Fmt(t.CpuPackageTemperatureC)} cpuCores={t.CpuCoreTemperatures.Count} " +
                 $"cpuPower={Fmt(t.CpuPackagePowerWatts)} motherboard={Fmt(t.MotherboardTemperatureC)} " +
                 $"vrm={Fmt(t.VrmTemperatureC)} fans={t.Fans.Count} " +
@@ -148,12 +149,14 @@ public partial class App : Application
         {
             _window = new SidebarWindow(_hub, settings);
             _window.Show();
+            _startupCompleted = true;
             AppLog.Write("startup: window shown");
         }
         catch (Exception ex)
         {
             AppLog.Write("startup: window creation failed", ex);
-            throw;
+            Shutdown(-1);
+            return;
         }
     }
 
@@ -201,20 +204,6 @@ public partial class App : Application
         base.OnExit(e);
     }
 
-    /// <summary>現在のプロセスが管理者権限で動いているか。</summary>
-    private static bool IsElevated()
-    {
-        try
-        {
-            using var identity = WindowsIdentity.GetCurrent();
-            return new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator);
-        }
-        catch
-        {
-            return false;
-        }
-    }
-
     private void OnDispatcherUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)
     {
         try
@@ -225,6 +214,14 @@ public partial class App : Application
         catch
         {
             // ログ出力自体が失敗してもアプリを落とさない。
+        }
+
+        if (!_startupCompleted)
+        {
+            // 起動完了前の例外はウィンドウ無しでゾンビ化させず、OnExit 経由でクリーンアップして終了する。
+            e.Handled = true;
+            Shutdown(-1);
+            return;
         }
 
         // ここでアプリを終了させると AppBar の解除処理が走らないまま落ちる恐れがあるため、

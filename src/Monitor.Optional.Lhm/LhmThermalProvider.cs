@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using System.Security.Principal;
 using LibreHardwareMonitor.Hardware;
 using Monitor.Core.Abstractions;
@@ -10,7 +11,7 @@ namespace Monitor.Optional.Lhm;
 /// 管理者権限で起動されたときだけ有効化される。管理者でなければ何もせず、
 /// 常に空の <see cref="ThermalSnapshot"/> を返す（アプリ本体は通常どおり動き続ける）。
 /// </summary>
-public sealed class LhmThermalProvider : IThermalProvider
+public sealed partial class LhmThermalProvider : IThermalProvider
 {
     private readonly IReadOnlyDictionary<string, string> _sensorAliases;
     private readonly HashSet<string> _hiddenSensors;
@@ -57,6 +58,8 @@ public sealed class LhmThermalProvider : IThermalProvider
 
     public bool LastSampleFailed { get; private set; }
 
+    public string PawnIoStatus { get; private set; } = "unchecked";
+
     public void Initialize()
     {
         try
@@ -65,9 +68,12 @@ public sealed class LhmThermalProvider : IThermalProvider
             if (!_isElevated)
             {
                 // 管理者でなければ Computer.Open() を呼ばない（ドライバロードを試みて無駄に失敗するため）。
+                PawnIoStatus = "skipped(not-elevated)";
                 IsAvailable = false;
                 return;
             }
+
+            PawnIoStatus = QueryPawnIoServiceStatus();
 
             var computer = new Computer
             {
@@ -170,7 +176,9 @@ public sealed class LhmThermalProvider : IThermalProvider
 
     public void Dispose()
     {
+        IsAvailable = false;
         CloseComputerSafe();
+        _computer = null;
     }
 
     private void CloseComputerSafe()
@@ -185,7 +193,7 @@ public sealed class LhmThermalProvider : IThermalProvider
         }
     }
 
-    private static bool IsRunningElevated()
+    public static bool IsRunningElevated()
     {
         try
         {
@@ -198,6 +206,87 @@ public sealed class LhmThermalProvider : IThermalProvider
             return false;
         }
     }
+
+    private static string QueryPawnIoServiceStatus()
+    {
+        const uint ScManagerConnect = 0x0001;
+        const uint ServiceQueryStatus = 0x0004;
+        const int ErrorServiceDoesNotExist = 1060;
+        const uint ServiceStopped = 1;
+        const uint ServiceRunning = 4;
+
+        IntPtr scm = IntPtr.Zero;
+        IntPtr service = IntPtr.Zero;
+        try
+        {
+            scm = OpenSCManagerW(null, null, ScManagerConnect);
+            if (scm == IntPtr.Zero)
+            {
+                return $"error={Marshal.GetLastPInvokeError()}";
+            }
+
+            service = OpenServiceW(scm, "PawnIO", ServiceQueryStatus);
+            if (service == IntPtr.Zero)
+            {
+                int err = Marshal.GetLastPInvokeError();
+                return err == ErrorServiceDoesNotExist ? "not-installed" : $"error={err}";
+            }
+
+            if (!QueryServiceStatus(service, out SERVICE_STATUS status))
+            {
+                return $"error={Marshal.GetLastPInvokeError()}";
+            }
+
+            return status.dwCurrentState switch
+            {
+                ServiceRunning => "running",
+                ServiceStopped => "stopped",
+                _ => $"state={status.dwCurrentState}",
+            };
+        }
+        catch
+        {
+            return "error=exception";
+        }
+        finally
+        {
+            if (service != IntPtr.Zero)
+            {
+                CloseServiceHandle(service);
+            }
+
+            if (scm != IntPtr.Zero)
+            {
+                CloseServiceHandle(scm);
+            }
+        }
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct SERVICE_STATUS
+    {
+        public uint dwServiceType;
+        public uint dwCurrentState;
+        public uint dwControlsAccepted;
+        public uint dwWin32ExitCode;
+        public uint dwServiceSpecificExitCode;
+        public uint dwCheckPoint;
+        public uint dwWaitHint;
+    }
+
+    [LibraryImport("advapi32.dll", SetLastError = true, StringMarshalling = StringMarshalling.Utf16)]
+    private static partial IntPtr OpenSCManagerW(string? lpMachineName, string? lpDatabaseName, uint dwDesiredAccess);
+
+    [LibraryImport("advapi32.dll", SetLastError = true, StringMarshalling = StringMarshalling.Utf16)]
+    private static partial IntPtr OpenServiceW(IntPtr hSCManager, string lpServiceName, uint dwDesiredAccess);
+
+    [LibraryImport("advapi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool QueryServiceStatus(IntPtr hService, out SERVICE_STATUS lpServiceStatus);
+
+    [LibraryImport("advapi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool CloseServiceHandle(IntPtr hSCObject);
 
     private static bool HardwareHasAnySensor(IHardware hw)
     {

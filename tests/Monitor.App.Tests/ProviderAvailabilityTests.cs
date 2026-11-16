@@ -5,6 +5,8 @@ using System.Windows;
 using System.Windows.Media;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using Monitor.App.Controls;
+using Monitor.App.Settings;
+using System.Windows.Threading;
 using Monitor.App.ViewModels;
 using Monitor.Core;
 using Monitor.Core.Abstractions;
@@ -49,7 +51,14 @@ public sealed class ProviderAvailabilityTests
     [DataRow(VolumeKind.Removable, 21, true)]
     [DataRow(VolumeKind.CdRom, 1112, true)]
     [DataRow(VolumeKind.Fixed, 5, false)]
-    [DataRow(VolumeKind.Network, 5, false)]
+    [DataRow(VolumeKind.Network, 5, true)]
+    [DataRow(VolumeKind.Network, 1326, true)]
+    [DataRow(VolumeKind.Network, 1231, true)]
+    [DataRow(VolumeKind.Network, 67, true)]
+    [DataRow(VolumeKind.Network, 21, true)]
+    [DataRow(VolumeKind.Removable, 5, true)]
+    [DataRow(VolumeKind.Removable, 1326, true)]
+    [DataRow(VolumeKind.Fixed, 1326, false)]
     [DataRow(VolumeKind.Unknown, 21, false)]
     public void Volume_NotReadyClassification_DoesNotHideUnexpectedReadErrors(VolumeKind kind, int error, bool expected) =>
         Assert.AreEqual(expected, VolumeProvider.IsExpectedNotReady(kind, error));
@@ -196,6 +205,167 @@ public sealed class ProviderAvailabilityTests
         Assert.AreEqual(0L, allocated);
         Assert.AreEqual("—", networkRow.DownText);
         Assert.AreEqual("—", processRow.CpuText);
+    }
+
+    [TestMethod]
+    public async Task Volume_DisconnectedDrive_IsRemovedFromCache_WhileTransientFailureKeepsConnectedDrive()
+    {
+        var driveZ = new VolumeSnapshot { DriveLetter = "Z:", Kind = VolumeKind.Network, IsReady = true, TotalBytes = 100, UsedBytes = 25 };
+        var driveY = new VolumeSnapshot { DriveLetter = "Y:", Kind = VolumeKind.Removable, IsReady = true, TotalBytes = 200, UsedBytes = 50 };
+
+        string[] currentDrives = ["Z:\\", "Y:\\"];
+        using var provider = new VolumeProvider { ReadDriveNamesForTest = () => currentDrives };
+        provider.ReadVolumeForTest = letter => letter.StartsWith("Z", StringComparison.OrdinalIgnoreCase)
+            ? new(driveZ, Failed: false)
+            : new(driveY, Failed: false);
+
+        await provider.RefreshForTest();
+        IReadOnlyList<VolumeSnapshot> initial = provider.Sample(TimeSpan.FromSeconds(5));
+        Assert.AreEqual(2, initial.Count);
+
+        // Y: が切断され Z: は一時失敗になった場合、Y: はキャッシュから消え Z: は前回値が保持される
+        currentDrives = ["Z:\\"];
+        provider.ReadVolumeForTest = _ => new(driveZ with { IsReady = false, TotalBytes = 0, UsedBytes = 0 }, Failed: true);
+
+        await provider.RefreshForTest();
+        IReadOnlyList<VolumeSnapshot> afterDisconnect = provider.Sample(TimeSpan.FromSeconds(5));
+        Assert.AreEqual(1, afterDisconnect.Count);
+        Assert.AreSame(driveZ, afterDisconnect[0]);
+        Assert.IsTrue(provider.LastSampleFailed);
+    }
+
+    [TestMethod]
+    public async Task Volume_SampleAfterDispose_ReturnsEmptyWithoutThrowing()
+    {
+        var driveZ = new VolumeSnapshot { DriveLetter = "Z:", Kind = VolumeKind.Fixed, IsReady = true, TotalBytes = 100, UsedBytes = 10 };
+        var provider = new VolumeProvider { ReadDriveNamesForTest = () => ["Z:\\"] };
+        provider.ReadVolumeForTest = _ => new(driveZ, Failed: false);
+
+        provider.Initialize();
+        await provider.RefreshForTest();
+        Assert.AreEqual(1, provider.Sample(TimeSpan.FromSeconds(5)).Count);
+
+        provider.Dispose();
+
+        IReadOnlyList<VolumeSnapshot> afterDispose = provider.Sample(TimeSpan.FromSeconds(5));
+        Assert.AreEqual(0, afterDispose.Count);
+        Assert.IsFalse(provider.LastSampleFailed);
+        Assert.IsFalse(provider.IsAvailable);
+    }
+
+    [TestMethod]
+    public async Task Volume_DeniedNetworkDrive_ThreeHubSamplesKeepLocalValuesAvailable()
+    {
+        using var provider = new VolumeProvider { ReadDriveNamesForTest = () => ["C:\\", "Z:\\"] };
+        var local = new VolumeSnapshot { DriveLetter = "C:", Kind = VolumeKind.Fixed, IsReady = true, TotalBytes = 100, UsedBytes = 25 };
+        var denied = new VolumeSnapshot { DriveLetter = "Z:", Kind = VolumeKind.Network, IsReady = false };
+        provider.ReadVolumeForTest = drive => drive[0] == 'C' ? new(local, false)
+            : new(denied, !VolumeProvider.IsExpectedNotReady(VolumeKind.Network, 5));
+        await provider.RefreshForTest();
+        var hub = VolumeHub(provider);
+        var samples = new ConcurrentQueue<MetricsSnapshot>();
+        var reached = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        hub.SnapshotAvailable += snapshot => { samples.Enqueue(snapshot); if (samples.Count >= 3) reached.TrySetResult(); };
+        hub.Start();
+        try { await reached.Task.WaitAsync(TimeSpan.FromSeconds(10)); }
+        finally { await hub.DisposeAsync(); }
+        foreach (MetricsSnapshot snapshot in samples.Take(3))
+        {
+            Assert.AreEqual(MetricSources.None, snapshot.UnavailableSources & MetricSources.Volumes);
+            Assert.AreEqual(2, snapshot.Volumes.Count);
+            Assert.AreSame(local, snapshot.Volumes[0]);
+            Assert.IsFalse(snapshot.Volumes[1].IsReady);
+        }
+        AssertVolumeRows(samples.Take(3).ToArray());
+    }
+
+    [TestMethod]
+    public async Task Volume_HubPublishesPrunedListEvenWhenSurvivingDriveFails()
+    {
+        string[] drives = ["C:\\", "Z:\\"];
+        bool fail = false;
+        var local = new VolumeSnapshot { DriveLetter = "C:", Kind = VolumeKind.Fixed, IsReady = true, TotalBytes = 100 };
+        var network = new VolumeSnapshot { DriveLetter = "Z:", Kind = VolumeKind.Network, IsReady = true };
+        using var provider = new VolumeProvider { ReadDriveNamesForTest = () => drives };
+        provider.ReadVolumeForTest = drive => new(drive[0] == 'C' ? local : network, fail);
+        await provider.RefreshForTest();
+        var hub = VolumeHub(provider);
+        var initial = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var pruned = new TaskCompletionSource<MetricsSnapshot>(TaskCreationOptions.RunContinuationsAsynchronously);
+        hub.SnapshotAvailable += snapshot =>
+        {
+            if (snapshot.Volumes.Count == 2) initial.TrySetResult();
+            if (snapshot.Volumes.Count == 1) pruned.TrySetResult(snapshot);
+        };
+        hub.Start();
+        try
+        {
+            await initial.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            MetricsSnapshot initialSnapshot = hub.Latest!;
+            drives = ["C:\\"];
+            fail = true;
+            await provider.RefreshForTest();
+            MetricsSnapshot snapshot = await pruned.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            Assert.AreSame(local, snapshot.Volumes[0], "Retain the individual failed-drive cache while removing Z:.");
+            AssertVolumeRows(initialSnapshot, snapshot);
+        }
+        finally { await hub.DisposeAsync(); }
+    }
+
+    private static void AssertVolumeRows(params MetricsSnapshot[] snapshots)
+    {
+        Exception? failure = null;
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                var uiHub = MetricsHub.CreateForTest();
+                var settings = new AppSettings();
+                settings.ExpandedSections["storage"] = true;
+                using var vm = new SidebarViewModel(uiHub, Dispatcher.CurrentDispatcher, settings);
+                foreach (MetricsSnapshot snapshot in snapshots)
+                {
+                    uiHub.PublishSnapshotForTest(snapshot);
+                    vm.ApplyLatestSnapshot();
+                    Assert.AreEqual(snapshot.Volumes.Count, vm.StorageRows.Count, "Pruned drives must leave the UI too.");
+                    foreach (VolumeSnapshot volume in snapshot.Volumes)
+                    {
+                        StorageRowViewModel row = vm.StorageRows.Single(r => r.Key == volume.DriveLetter);
+                        Assert.AreEqual(volume.IsReady, row.IsReady);
+                        if (volume.IsReady && volume.TotalBytes > 0)
+                            Assert.AreNotEqual("—", row.CapacityText, "Healthy local capacity must stay visible.");
+                        else Assert.AreEqual("—", row.CapacityText);
+                    }
+                }
+                uiHub.DisposeAsync().AsTask().GetAwaiter().GetResult();
+            }
+            catch (Exception ex) { failure = ex; }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        Assert.IsTrue(thread.Join(TimeSpan.FromSeconds(10)));
+        Assert.IsNull(failure, failure?.ToString());
+    }
+
+    private static MetricsHub VolumeHub(VolumeProvider volumes) => new(new MetricsHubOptions
+    {
+        FastInterval = TimeSpan.FromHours(1), ProcessInterval = TimeSpan.FromHours(1),
+        ThermalInterval = TimeSpan.FromHours(1), VolumeInterval = TimeSpan.FromMilliseconds(5),
+    }, new FixedProvider<CpuSnapshot>(CpuSnapshot.Empty), new FixedProvider<MemorySnapshot>(MemorySnapshot.Empty),
+        new FixedProvider<DiskSnapshot>(DiskSnapshot.Empty), new FixedProvider<NetworkSnapshot>(NetworkSnapshot.Empty),
+        new FixedProvider<GpuSnapshot>(GpuSnapshot.Empty), new FixedProvider<ProcessSnapshot>(ProcessSnapshot.Empty),
+        new EmptyThermalProvider(), new PreRefreshedVolumes(volumes));
+
+    // Explicit refreshes keep tests independent of the provider's five-second background schedule.
+    private sealed class PreRefreshedVolumes(VolumeProvider provider) : IMetricProvider<IReadOnlyList<VolumeSnapshot>>
+    {
+        public string Name => "Volumes";
+        public bool IsAvailable => true;
+        public bool LastSampleFailed => provider.LastSampleFailed;
+        public bool PreservesPartialSamplesOnFailure => true;
+        public void Initialize() { }
+        public IReadOnlyList<VolumeSnapshot> Sample(TimeSpan elapsed) => provider.Sample(elapsed);
+        public void Dispose() { }
     }
 
     private static MetricsHubOptions FastOptions(ConcurrentQueue<(string, Exception?)> logs) => new()

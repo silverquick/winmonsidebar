@@ -348,36 +348,71 @@ public sealed class AppBarHost : IDisposable
     /// </summary>
     public void Unregister()
     {
-        if (_fullscreenTimer is not null)
+        try
         {
-            _fullscreenTimer.Stop();
-            _fullscreenTimer = null;
+            if (IsRegistered)
+            {
+                var abd = APPBARDATA.Create(_hwnd);
+                Shell32.SHAppBarMessage(Shell32.ABM_REMOVE, ref abd);
+            }
         }
-
-        _suppressedForFullscreen = false;
-        _shellHwnd = IntPtr.Zero;
-        _cachedSidebarMonitor = IntPtr.Zero;
-        _cachedSidebarMonitorRect = default;
-        _lastForegroundHwnd = IntPtr.Zero;
-        _lastForegroundIsExcludedClass = false;
-
-        if (_hook is not null)
+        catch (Exception ex) { Monitor.App.Diagnostics.AppLog.Write("AppBar ABM_REMOVE", ex); }
+        finally
         {
-            _source?.RemoveHook(_hook);
-            _hook = null;
+            IsRegistered = false;
+            // Retain references until the owning dispatcher actually performs each cleanup.
+            DispatcherTimer? timer = _fullscreenTimer;
+            if (timer is not null)
+            {
+                try
+                {
+                    if (timer.Dispatcher.CheckAccess()) StopFullscreenTimer(timer);
+                    else timer.Dispatcher.BeginInvoke(new Action(() => StopFullscreenTimer(timer)));
+                }
+                catch (Exception ex) { Monitor.App.Diagnostics.AppLog.Write("AppBar timer cleanup", ex); }
+            }
+            HwndSource? source = _source;
+            HwndSourceHook? hook = _hook;
+            if (source is not null && hook is not null)
+            {
+                try
+                {
+                    if (source.Dispatcher.CheckAccess()) RemoveMessageHook(source, hook);
+                    else source.Dispatcher.BeginInvoke(new Action(() => RemoveMessageHook(source, hook)));
+                }
+                catch (Exception ex) { Monitor.App.Diagnostics.AppLog.Write("AppBar hook cleanup", ex); }
+            }
+            _suppressedForFullscreen = false;
+            _shellHwnd = IntPtr.Zero;
+            _cachedSidebarMonitor = IntPtr.Zero;
+            _cachedSidebarMonitorRect = default;
+            _lastForegroundHwnd = IntPtr.Zero;
+            _lastForegroundIsExcludedClass = false;
         }
+    }
 
-        _source = null;
-
-        if (!IsRegistered)
+    private void StopFullscreenTimer(DispatcherTimer timer)
+    {
+        try
         {
-            return;
+            timer.Stop();
+            if (ReferenceEquals(_fullscreenTimer, timer)) _fullscreenTimer = null;
         }
+        catch (Exception ex) { Monitor.App.Diagnostics.AppLog.Write("AppBar timer stop", ex); }
+    }
 
-        var abd = APPBARDATA.Create(_hwnd);
-        Shell32.SHAppBarMessage(Shell32.ABM_REMOVE, ref abd);
-
-        IsRegistered = false;
+    private void RemoveMessageHook(HwndSource source, HwndSourceHook hook)
+    {
+        try
+        {
+            source.RemoveHook(hook);
+            if (ReferenceEquals(_source, source) && ReferenceEquals(_hook, hook))
+            {
+                _source = null;
+                _hook = null;
+            }
+        }
+        catch (Exception ex) { Monitor.App.Diagnostics.AppLog.Write("AppBar hook removal", ex); }
     }
 
     public void Dispose()
