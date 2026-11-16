@@ -1,5 +1,6 @@
 using System.IO;
 using System.Text.Json;
+using Monitor.App.Diagnostics;
 
 namespace Monitor.App.Settings;
 
@@ -41,6 +42,13 @@ public static class SettingsStore
         {
             try
             {
+                string? directory = Path.GetDirectoryName(FilePath);
+                if ((!string.IsNullOrEmpty(directory) && AppLog.HasReparsePointInDirectoryPath(directory)) ||
+                    AppLog.IsReparsePoint(FilePath))
+                {
+                    return new AppSettings();
+                }
+
                 if (!File.Exists(FilePath))
                 {
                     return new AppSettings();
@@ -48,7 +56,19 @@ public static class SettingsStore
 
                 string json = File.ReadAllText(FilePath);
                 AppSettings? settings = JsonSerializer.Deserialize(json, AppSettingsJsonContext.Default.AppSettings);
-                return settings ?? new AppSettings();
+                if (settings is null)
+                {
+                    TryBackupCorruptedFile(FilePath);
+                    return new AppSettings();
+                }
+
+                settings.Normalize();
+                return settings;
+            }
+            catch (JsonException)
+            {
+                TryBackupCorruptedFile(FilePath);
+                return new AppSettings();
             }
             catch
             {
@@ -108,22 +128,65 @@ public static class SettingsStore
     {
         lock (SyncRoot)
         {
+            string tempPath = filePath + ".tmp";
             try
             {
                 string? directory = Path.GetDirectoryName(filePath);
                 if (!string.IsNullOrEmpty(directory))
                 {
+                    if (AppLog.HasReparsePointInDirectoryPath(directory))
+                    {
+                        return;
+                    }
+
                     Directory.CreateDirectory(directory);
+                    if (AppLog.HasReparsePointInDirectoryPath(directory))
+                    {
+                        return;
+                    }
                 }
 
-                string tempPath = filePath + ".tmp";
+                if (AppLog.IsReparsePoint(filePath) || AppLog.IsReparsePoint(tempPath))
+                {
+                    return;
+                }
+
                 File.WriteAllText(tempPath, json);
                 File.Move(tempPath, filePath, overwrite: true);
             }
             catch
             {
                 // 保存失敗はアプリの継続動作を妨げない。次回起動時は既定値/前回値のまま扱われる。
+                try
+                {
+                    if (File.Exists(tempPath) && !AppLog.HasReparsePointInDirectoryPath(Path.GetDirectoryName(tempPath)!) && !AppLog.IsReparsePoint(tempPath))
+                    {
+                        File.Delete(tempPath);
+                    }
+                }
+                catch
+                {
+                    // 一時ファイルの削除失敗も無視する。
+                }
             }
+        }
+    }
+
+    private static void TryBackupCorruptedFile(string filePath)
+    {
+        try
+        {
+            string backupPath = filePath + ".bak";
+            string? directory = Path.GetDirectoryName(filePath);
+            if ((directory is null || !AppLog.HasReparsePointInDirectoryPath(directory)) &&
+                !AppLog.IsReparsePoint(filePath) && !AppLog.IsReparsePoint(backupPath) && File.Exists(filePath))
+            {
+                File.Move(filePath, backupPath, overwrite: true);
+            }
+        }
+        catch
+        {
+            // バックアップ退避の失敗は無視して既定値へのフォールバックを継続する。
         }
     }
 }

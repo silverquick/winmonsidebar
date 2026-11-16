@@ -7,7 +7,12 @@ namespace Monitor.App.Settings;
 /// </summary>
 public sealed class AppSettings
 {
-    public int ThicknessDip { get; set; } = 340;
+    public const int FixedThicknessDip = 340;
+    public const int MinTopProcessCount = 1;
+    public const int MaxTopProcessCount = 16;
+    public const int MaxHiddenSensorsCount = 128;
+
+    public int ThicknessDip { get; set; } = FixedThicknessDip;
 
     public string Edge { get; set; } = "Right";
 
@@ -36,6 +41,42 @@ public sealed class AppSettings
 
     /// <summary>表示しないセンサーの生の名前または LHM 識別子（大文字小文字を区別しない）。</summary>
     public List<string> HiddenSensors { get; set; } = new();
+
+    /// <summary>
+    /// 読み込んだ設定値を安全な範囲に正規化し、null コレクションを補う。
+    /// </summary>
+    public void Normalize()
+    {
+        ThicknessDip = FixedThicknessDip;
+
+        if (!string.Equals(Edge, "Left", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(Edge, "Top", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(Edge, "Right", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(Edge, "Bottom", StringComparison.OrdinalIgnoreCase))
+        {
+            Edge = "Right";
+        }
+
+        TopProcessCount = Math.Clamp(TopProcessCount, MinTopProcessCount, MaxTopProcessCount);
+        ExpandedSections ??= new Dictionary<string, bool>();
+        SensorAliases ??= new Dictionary<string, string>();
+        HiddenSensors ??= new List<string>();
+
+        int writeIndex = 0;
+        for (int i = 0; i < HiddenSensors.Count && writeIndex < MaxHiddenSensorsCount; i++)
+        {
+            string entry = HiddenSensors[i];
+            if (!string.IsNullOrWhiteSpace(entry))
+            {
+                HiddenSensors[writeIndex++] = entry;
+            }
+        }
+
+        if (writeIndex < HiddenSensors.Count)
+        {
+            HiddenSensors.RemoveRange(writeIndex, HiddenSensors.Count - writeIndex);
+        }
+    }
 }
 
 /// <summary>

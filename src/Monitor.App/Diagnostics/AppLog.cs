@@ -28,7 +28,21 @@ public static class AppLog
                 var dir = Path.GetDirectoryName(FilePath);
                 if (!string.IsNullOrEmpty(dir))
                 {
+                    if (HasReparsePointInDirectoryPath(dir))
+                    {
+                        return;
+                    }
+
                     Directory.CreateDirectory(dir);
+                    if (HasReparsePointInDirectoryPath(dir))
+                    {
+                        return;
+                    }
+                }
+
+                if (IsReparsePoint(FilePath))
+                {
+                    return;
                 }
 
                 var line = string.Create(CultureInfo.InvariantCulture,
@@ -43,4 +57,24 @@ public static class AppLog
     }
 
     public static void Write(string context, Exception ex) => Write($"{context}: {ex}");
+
+    // Path checks do not protect against replacement between validation and use.
+    internal static bool HasReparsePointInDirectoryPath(string directory)
+    {
+        string? current = Path.GetFullPath(directory);
+        string profile = Path.GetFullPath(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
+        while (current is not null && !string.Equals(current, profile, StringComparison.OrdinalIgnoreCase))
+        {
+            if (IsReparsePoint(current)) return true;
+            current = Path.GetDirectoryName(current);
+        }
+        return false;
+    }
+
+    internal static bool IsReparsePoint(string path)
+    {
+        try { return (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0; }
+        catch (FileNotFoundException) { return false; }
+        catch (DirectoryNotFoundException) { return false; }
+    }
 }

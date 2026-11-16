@@ -1,7 +1,9 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.IO;
 using System.Windows.Threading;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
+using Monitor.App.Diagnostics;
 using Monitor.App.Settings;
 using Monitor.App.ViewModels;
 using Monitor.Core;
@@ -150,4 +152,196 @@ public sealed class SettingsDebounceTests
         Assert.IsTrue(saved.All(s => ReferenceEquals(s, settings)));
         Assert.IsTrue(settings.ExpandedSections["cpu"]);
     }
+
+    [TestMethod]
+    public void Load_ClampsTopProcessCount_NormalizesEdgeAndNullCollections()
+    {
+        string previousPath = SettingsStore.FilePath;
+        string directory = Path.Combine(Path.GetTempPath(), "WinMonSidebarTests_" + Guid.NewGuid().ToString("N"));
+        string path = Path.Combine(directory, "settings.json");
+        try
+        {
+            Directory.CreateDirectory(directory);
+            File.WriteAllText(path, """
+                {
+                  "ThicknessDip": 999,
+                  "Edge": "Diagonal",
+                  "TopProcessCount": 999999,
+                  "ExpandedSections": null,
+                  "SensorAliases": null,
+                  "HiddenSensors": ["CPU Package", "   ", null]
+                }
+                """);
+
+            SettingsStore.SetFilePathForTest(path);
+            AppSettings loaded = SettingsStore.Load();
+
+            Assert.AreEqual(AppSettings.FixedThicknessDip, loaded.ThicknessDip);
+            Assert.AreEqual("Right", loaded.Edge);
+            Assert.AreEqual(AppSettings.MaxTopProcessCount, loaded.TopProcessCount);
+            Assert.IsNotNull(loaded.ExpandedSections);
+            Assert.IsNotNull(loaded.SensorAliases);
+            Assert.IsNotNull(loaded.HiddenSensors);
+            CollectionAssert.AreEqual(new[] { "CPU Package" }, loaded.HiddenSensors);
+
+            // 下限未満のクランプも検証する
+            File.WriteAllText(path, """{ "TopProcessCount": -5 }""");
+            AppSettings loadedMin = SettingsStore.Load();
+            Assert.AreEqual(AppSettings.MinTopProcessCount, loadedMin.TopProcessCount);
+        }
+        finally
+        {
+            SettingsStore.SetFilePathForTest(previousPath);
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+    }
+
+    [TestMethod]
+    public void Load_CorruptedJson_BacksUpToBakAndReturnsDefault()
+    {
+        string previousPath = SettingsStore.FilePath;
+        string directory = Path.Combine(Path.GetTempPath(), "WinMonSidebarTests_" + Guid.NewGuid().ToString("N"));
+        string path = Path.Combine(directory, "settings.json");
+        try
+        {
+            Directory.CreateDirectory(directory);
+            File.WriteAllText(path + ".bak", "older backup");
+            const string brokenJson = "{ broken json ...";
+            File.WriteAllText(path, brokenJson);
+
+            SettingsStore.SetFilePathForTest(path);
+            AppSettings loaded = SettingsStore.Load();
+
+            Assert.AreEqual(8, loaded.TopProcessCount);
+            Assert.AreEqual("Right", loaded.Edge);
+            Assert.IsTrue(File.Exists(path + ".bak"), "Corrupted settings file should be backed up to .bak.");
+            Assert.AreEqual(brokenJson, File.ReadAllText(path + ".bak"));
+            Assert.IsFalse(File.Exists(path), "Corrupt settings must be moved, not copied.");
+        }
+        finally
+        {
+            SettingsStore.SetFilePathForTest(previousPath);
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+    }
+
+    [TestMethod]
+    [DataRow("")]
+    [DataRow("ordinary")]
+    [DataRow("ordinary/deeper")]
+    public void WriteJson_And_Load_RefusesReparsePoint(string child)
+    {
+        string previousPath = SettingsStore.FilePath;
+        string root = Path.Combine(Path.GetTempPath(), "WinMonSidebarTests_" + Guid.NewGuid().ToString("N"));
+        string targetDir = Path.Combine(root, "target");
+        string junctionDir = Path.Combine(root, "junction");
+        string targetSettingsPath = Path.Combine(targetDir, child, "settings.json");
+        string junctionSettingsPath = Path.Combine(junctionDir, child, "settings.json");
+
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(targetSettingsPath)!);
+
+            using (Process? proc = Process.Start(new ProcessStartInfo("cmd.exe")
+            {
+                ArgumentList = { "/c", "mklink", "/J", junctionDir, targetDir },
+                CreateNoWindow = true,
+                UseShellExecute = false,
+            }))
+            {
+                Assert.IsNotNull(proc);
+                proc.WaitForExit(5000);
+                Assert.AreEqual(0, proc.ExitCode);
+            }
+
+            Assert.IsTrue(AppLog.IsReparsePoint(junctionDir), "Junction directory should be detected as a reparse point.");
+            Assert.IsTrue(AppLog.HasReparsePointInDirectoryPath(Path.GetDirectoryName(junctionSettingsPath)!), "Shared log/settings helper must inspect every ancestor.");
+
+            // ジャンクション経由の WriteJson は拒否されること
+            SettingsStore.WriteJson(junctionSettingsPath, """{ "TopProcessCount": 3 }""");
+            Assert.IsFalse(File.Exists(targetSettingsPath), "WriteJson must refuse to write through a reparse point.");
+
+            // 実体側に設定が存在しても、ジャンクション経由の Load は読み込まず既定値を返すこと
+            File.WriteAllText(targetSettingsPath, """{ "TopProcessCount": 3 }""");
+            SettingsStore.SetFilePathForTest(junctionSettingsPath);
+            AppSettings loaded = SettingsStore.Load();
+            Assert.AreEqual(8, loaded.TopProcessCount);
+        }
+        finally
+        {
+            SettingsStore.SetFilePathForTest(previousPath);
+            try
+            {
+                if (Directory.Exists(junctionDir))
+                {
+                    Directory.Delete(junctionDir, recursive: false);
+                }
+            }
+            catch
+            {
+                // ignore
+            }
+
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+    [TestMethod]
+    [DataRow("")]
+    [DataRow(".tmp")]
+    [DataRow(".bak")]
+    public void Settings_FinalTemporaryAndBackupReparsePoints_AreRefused(string suffix)
+    {
+        string previousPath = SettingsStore.FilePath;
+        string root = Path.Combine(Path.GetTempPath(), "WinMonSidebarTests_" + Guid.NewGuid().ToString("N"));
+        string target = Path.Combine(root, "target");
+        string file = Path.Combine(root, "settings.json");
+        string link = file + suffix;
+        try
+        {
+            Directory.CreateDirectory(target);
+            string sentinel = Path.Combine(target, "sentinel");
+            File.WriteAllText(sentinel, "unchanged");
+            using (Process? process = Process.Start(new ProcessStartInfo("cmd.exe")
+            {
+                ArgumentList = { "/c", "mklink", "/J", link, target },
+                CreateNoWindow = true, UseShellExecute = false,
+            }))
+            {
+                Assert.IsNotNull(process);
+                Assert.IsTrue(process.WaitForExit(5000));
+                Assert.AreEqual(0, process.ExitCode);
+            }
+            Assert.IsTrue(AppLog.IsReparsePoint(link));
+            if (suffix == ".bak")
+            {
+                File.WriteAllText(file, "{broken");
+                SettingsStore.SetFilePathForTest(file);
+                Assert.AreEqual(8, SettingsStore.Load().TopProcessCount);
+                Assert.AreEqual("{broken", File.ReadAllText(file), "Refusing an unsafe backup must retain the source.");
+            }
+            else
+            {
+                SettingsStore.WriteJson(file, "{}");
+                Assert.IsFalse(File.Exists(file));
+            }
+            Assert.AreEqual("unchanged", File.ReadAllText(sentinel));
+            Assert.AreEqual(1, Directory.GetFileSystemEntries(target).Length);
+        }
+        finally
+        {
+            SettingsStore.SetFilePathForTest(previousPath);
+            if (Directory.Exists(link)) Directory.Delete(link, recursive: false);
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
 }
