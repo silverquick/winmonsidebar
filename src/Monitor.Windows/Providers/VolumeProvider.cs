@@ -27,7 +27,24 @@ public sealed partial class VolumeProvider : IMetricProvider<IReadOnlyList<Volum
     private readonly object _cacheGate = new();
     private bool _refreshFailed;
     private bool _disposed;
-    internal readonly record struct VolumeReadResult(VolumeSnapshot Snapshot, bool Failed);
+    internal readonly record struct VolumeReadResult(VolumeSnapshot Snapshot, bool Failed, int ErrorCode = 0, Type? ExceptionType = null);
+    private VolumeReadResult? _refreshFailure;
+    private VolumeReadResult? _sampleFailure;
+    public string? LastFailureReason => _sampleFailure is { } f
+        ? $"{f.Snapshot.DriveLetter} ({f.Snapshot.Kind}): Win32={f.ErrorCode}, exception={f.ExceptionType?.Name ?? "none"}" : null;
+
+    private void RecordRefreshFailure(VolumeReadResult failure)
+    {
+        lock (_cacheGate)
+        {
+            if (_disposed) return;
+            if (!_refreshFailed) _refreshFailure = failure;
+            _refreshFailed = true;
+        }
+    }
+
+    private void RecordRefreshException(Exception exception) => RecordRefreshFailure(
+        new VolumeReadResult(new VolumeSnapshot { DriveLetter = "drive enumeration/refresh", Kind = VolumeKind.Unknown }, true, ExceptionType: exception.GetType()));
     internal Func<string, VolumeReadResult>? ReadVolumeForTest { get; set; }
     internal Func<string[]>? ReadDriveNamesForTest { get; set; }
     internal Task RefreshForTest() => RefreshAsync(CancellationToken.None);
@@ -67,6 +84,7 @@ public sealed partial class VolumeProvider : IMetricProvider<IReadOnlyList<Volum
             }
 
             LastSampleFailed = _refreshFailed;
+            _sampleFailure = _refreshFailure;
             return _cache;
         }
     }
@@ -165,7 +183,7 @@ public sealed partial class VolumeProvider : IMetricProvider<IReadOnlyList<Volum
             }
 
             _cache = cache;
-            if (refreshSucceeded) _refreshFailed = false;
+            if (refreshSucceeded) { _refreshFailed = false; _refreshFailure = null; }
         }
     }
 
@@ -176,9 +194,9 @@ public sealed partial class VolumeProvider : IMetricProvider<IReadOnlyList<Volum
             await RefreshCoreAsync(token).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { }
-        catch
+        catch (Exception ex)
         {
-            lock (_cacheGate) _refreshFailed = true;
+            RecordRefreshException(ex);
         }
     }
 
@@ -193,9 +211,9 @@ public sealed partial class VolumeProvider : IMetricProvider<IReadOnlyList<Volum
         {
             driveNames = ReadDriveNamesForTest?.Invoke() ?? DriveInfo.GetDrives().Select(d => d.Name).ToArray();
         }
-        catch
+        catch (Exception ex)
         {
-            lock (_cacheGate) _refreshFailed = true;
+            RecordRefreshException(ex);
             return; // keep whatever was cached before
         }
 
@@ -245,7 +263,7 @@ public sealed partial class VolumeProvider : IMetricProvider<IReadOnlyList<Volum
                 if (result.Failed)
                 {
                     refreshSucceeded = false;
-                    lock (_cacheGate) _refreshFailed = true;
+                    RecordRefreshFailure(result);
                     continue; // 失敗を not-ready の観測と取り違えて、正常な容量キャッシュを上書きしない。
                 }
                 VolumeSnapshot snapshot = result.Snapshot;
@@ -256,10 +274,10 @@ public sealed partial class VolumeProvider : IMetricProvider<IReadOnlyList<Volum
                     lastPublishUtc = DateTime.UtcNow;
                 }
             }
-            catch
+            catch (Exception ex)
             {
                 refreshSucceeded = false;
-                lock (_cacheGate) _refreshFailed = true;
+                RecordRefreshException(ex);
                 // ReadVolumeSafe never throws, but guard defensively; skip this drive for this round.
             }
         }
@@ -274,10 +292,13 @@ public sealed partial class VolumeProvider : IMetricProvider<IReadOnlyList<Volum
     {
         string letter = driveNamePath.TrimEnd('\\');
         bool failed = false;
+        int errorCode = 0;
+        Type? exceptionType = null;
+        VolumeKind kind = VolumeKind.Unknown;
 
         try
         {
-            VolumeKind kind = MapDriveType(GetDriveTypeW(driveNamePath));
+            kind = MapDriveType(GetDriveTypeW(driveNamePath));
 
             string? label = null;
             string? fileSystem = null;
@@ -301,8 +322,9 @@ public sealed partial class VolumeProvider : IMetricProvider<IReadOnlyList<Volum
                     fileSystem = fsBuffer.Length > 0 ? fsBuffer.ToString() : null;
                 }
             }
-            catch
+            catch (Exception ex)
             {
+                exceptionType ??= ex.GetType();
                 failed = true; // unexpected exception, not an absent optional label
             }
 
@@ -321,11 +343,17 @@ public sealed partial class VolumeProvider : IMetricProvider<IReadOnlyList<Volum
                 }
                 else
                 {
-                    failed |= !IsExpectedNotReady(kind, Marshal.GetLastPInvokeError());
+                    int error = Marshal.GetLastPInvokeError();
+                    if (!IsExpectedNotReady(kind, error))
+                    {
+                        failed = true;
+                        errorCode = error;
+                    }
                 }
             }
-            catch
+            catch (Exception ex)
             {
+                exceptionType ??= ex.GetType();
                 failed = true;
             }
 
@@ -353,16 +381,16 @@ public sealed partial class VolumeProvider : IMetricProvider<IReadOnlyList<Volum
                 UsedPercent = usedPercent,
                 PhysicalDriveNumber = physicalDriveNumber,
                 IsReady = isReady,
-            }, failed);
+            }, failed, errorCode, exceptionType);
         }
-        catch
+        catch (Exception ex)
         {
             return new VolumeReadResult(new VolumeSnapshot
             {
                 DriveLetter = letter,
-                Kind = VolumeKind.Unknown,
+                Kind = kind,
                 IsReady = false,
-            }, true);
+            }, true, errorCode, ex.GetType());
         }
     }
 

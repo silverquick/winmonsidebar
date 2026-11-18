@@ -403,7 +403,7 @@ public sealed class MetricsHub : IAsyncDisposable
             T value = provider.Sample(elapsed);
             if (provider.LastSampleFailed)
             {
-                failures.RecordFailure();
+                failures.RecordFailure(reasonProvider: provider);
                 return useValueOnFailure ? value : fallback;
             }
             failures.RecordSuccess();
@@ -607,7 +607,7 @@ public sealed class MetricsHub : IAsyncDisposable
             get { lock (_gate) { return _consecutiveFailures >= UnavailableAfterConsecutiveFailures; } }
         }
 
-        public void RecordFailure(Exception? exception = null)
+        public void RecordFailure(Exception? exception = null, IMetricFailureDiagnostics? reasonProvider = null)
         {
             bool isFirst;
             lock (_gate)
@@ -617,8 +617,9 @@ public sealed class MetricsHub : IAsyncDisposable
 
             if (isFirst)
             {
+                string? reason = reasonProvider?.LastFailureReason;
                 log(exception is null
-                    ? $"MetricsHub: {subject} が取得失敗を通知しました（既定値・キャッシュへ退避、回復するまで以降の同種の失敗は記録しません）"
+                    ? $"MetricsHub: {subject} が取得失敗を通知しました{(reason is null ? "" : $" [{reason}]")}（既定値・キャッシュへ退避、回復するまで以降の同種の失敗は記録しません）"
                     : $"MetricsHub: {subject} で例外が発生しました（回復するまで以降の同種の失敗は記録しません）", exception);
             }
         }

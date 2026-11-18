@@ -45,6 +45,12 @@ public sealed partial class CpuProvider : IMetricProvider<CpuSnapshot>, IDetailS
 
     public bool LastSampleFailed { get; private set; }
 
+    public string? LastFailureReason => _pdhQuery is { LastCollectionStatus: not 0 } ? $"PdhCollectQueryData: 0x{_pdhQuery.LastCollectionStatus:X8}" :
+        _perCoreCounter?.LastReadFailed == true ? $"{_perCoreCounter.Path}: 0x{_perCoreCounter.LastNativeStatus:X8}" :
+        _perCoreClockCounter?.LastReadFailed == true ? $"{_perCoreClockCounter.Path}: 0x{_perCoreClockCounter.LastNativeStatus:X8}" :
+        _performancePercentCounter?.LastReadFailed == true ? $"{_performancePercentCounter.Path}: 0x{_performancePercentCounter.LastNativeStatus:X8}" :
+        "GetSystemTimes / PDH collect / required clock read failed";
+
     public void SetDetailSamplingEnabled(bool enabled) =>
         Volatile.Write(ref _detailSamplingEnabled, enabled ? 1 : 0);
 
@@ -182,6 +188,7 @@ public sealed partial class CpuProvider : IMetricProvider<CpuSnapshot>, IDetailS
             if (!_pdhQuery.Collect()) LastSampleFailed = true;
 
             _coreBuffer.Clear();
+            _perCoreCounter.TolerateInstanceChurn = true;
             foreach (PdhItemSpan item in _perCoreCounter.Enumerate())
             {
                 if (TryParseCoreInstance(item.InstanceName, out long sortKey))
@@ -224,6 +231,7 @@ public sealed partial class CpuProvider : IMetricProvider<CpuSnapshot>, IDetailS
             // 直近の Collect() は SamplePerCoreUsagePercent 内で既に行われているため、ここでは
             // 同じサンプル時点の値をそのまま読む（GetValues 自体は Collect を必要としない）。
             _coreBuffer.Clear();
+            _perCoreClockCounter.TolerateInstanceChurn = true;
             foreach (PdhItemSpan item in _perCoreClockCounter.Enumerate())
             {
                 if (TryParseCoreInstance(item.InstanceName, out long sortKey))
@@ -232,7 +240,12 @@ public sealed partial class CpuProvider : IMetricProvider<CpuSnapshot>, IDetailS
                 }
             }
 
-            LastSampleFailed |= _perCoreClockCounter.LastReadFailed;
+            // Processor Performance may temporarily have a negative denominator (power-state
+            // changes). Omit this detail read; overall clock still has the known base-clock
+            // alternate in SampleCurrentClockMhz. Other API errors remain failures.
+            bool useBaseClock = _perCoreClockCounter.LastApiReadFailed &&
+                PdhReadHealth.IsCalculationError(_perCoreClockCounter.LastNativeStatus);
+            LastSampleFailed |= PdhReadHealth.RequiredFailed(true, _perCoreClockCounter.LastReadStatus, useBaseClock);
             if (_coreBuffer.Count == 0)
             {
                 return Array.Empty<double>();

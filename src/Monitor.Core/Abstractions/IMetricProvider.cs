@@ -3,9 +3,16 @@ using Monitor.Core.Models;
 namespace Monitor.Core.Abstractions;
 
 /// <summary>
-/// 1種類のメトリクスを供給する。Windows API / ベンダーAPI など実装を差し替え可能にするための境界。
+/// 失敗ログを補足する、遅延評価の診断。
 /// </summary>
-public interface IMetricProvider<T> : IDisposable
+public interface IMetricFailureDiagnostics
+{
+    /// <summary>失敗開始時だけ評価する診断。毎サンプル文字列を作らない。</summary>
+    string? LastFailureReason => null;
+}
+
+/// <summary>1種類のメトリクスを供給する。Windows API / ベンダーAPI の差し替え境界。</summary>
+public interface IMetricProvider<T> : IDisposable, IMetricFailureDiagnostics
 {
     string Name { get; }
 

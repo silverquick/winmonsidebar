@@ -51,6 +51,11 @@ public sealed class GpuProvider : IMetricProvider<GpuSnapshot>
 
     public bool LastSampleFailed { get; private set; }
 
+    public string? LastFailureReason => _query is { LastCollectionStatus: not 0 } ? $"PdhCollectQueryData: 0x{_query.LastCollectionStatus:X8}" :
+        _engineCounter?.LastReadFailed == true ? $"{_engineCounter.Path}: 0x{_engineCounter.LastNativeStatus:X8}" :
+        _dedicatedMemoryCounter?.LastReadFailed == true ? $"{_dedicatedMemoryCounter.Path}: 0x{_dedicatedMemoryCounter.LastNativeStatus:X8}" :
+        "PDH collect / GPU sample failed";
+
     public void Initialize()
     {
         if (_disposed)
@@ -135,9 +140,10 @@ public sealed class GpuProvider : IMetricProvider<GpuSnapshot>
             Dictionary<long, AdapterAccumulator> perAdapter = _perAdapterBuffer;
             _touchedAdapterLuidsBuffer.Clear();
 
+            _engineCounter.TolerateInstanceChurn = true;
             foreach (PdhItemSpan item in _engineCounter.Enumerate())
             {
-                if (!TryParseEngineInstance(item.InstanceName, out long luid, out ReadOnlySpan<char> engineType))
+                if (item.ReadStatus != PdhReadStatus.Success || !TryParseEngineInstance(item.InstanceName, out long luid, out ReadOnlySpan<char> engineType))
                 {
                     continue;
                 }
@@ -148,9 +154,10 @@ public sealed class GpuProvider : IMetricProvider<GpuSnapshot>
             LastSampleFailed |= _engineCounter.LastReadFailed;
             if (_dedicatedMemoryCounter is not null)
             {
+                _dedicatedMemoryCounter.TolerateInstanceChurn = true;
                 foreach (PdhItemSpan item in _dedicatedMemoryCounter.Enumerate())
                 {
-                    if (!TryParseMemoryInstance(item.InstanceName, out long luid))
+                    if (item.ReadStatus != PdhReadStatus.Success || !TryParseMemoryInstance(item.InstanceName, out long luid))
                     {
                         continue;
                     }

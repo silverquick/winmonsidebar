@@ -17,6 +17,14 @@ internal static class PdhReadHealth
 
     internal static bool RequiredFailed(bool present, PdhReadStatus status, bool alternateAvailable = false) =>
         present && status == PdhReadStatus.Failed && !alternateAvailable;
+
+    // Only wildcard item statuses: API errors and scalar reads remain strict.
+    internal static bool IsTransientItem(uint status) => status is
+        0x800007D1 or Pdh.PDH_CSTATUS_INVALID_DATA or Pdh.PDH_INVALID_DATA or
+        Pdh.PDH_CALC_NEGATIVE_DENOMINATOR or 0x800007D7 or 0x800007D8;
+
+    internal static bool IsCalculationError(uint status) => status is
+        Pdh.PDH_CALC_NEGATIVE_DENOMINATOR or 0x800007D7 or 0x800007D8;
 }
 
 /// <summary>One value read from a wildcard-expanded PDH counter, e.g. one CPU core or one disk instance.</summary>
@@ -103,6 +111,7 @@ public sealed class PdhCounter
 {
     internal delegate uint GetValueFunc(IntPtr handle, uint format, out uint type, out PDH_FMT_COUNTERVALUE value);
     private readonly GetValueFunc _getValue;
+    public uint LastNativeStatus { get; private set; }
     private int _readAttempts;
     internal PdhQuery? Query { get; set; }
     public PdhReadStatus LastReadStatus { get; private set; }
@@ -131,6 +140,7 @@ public sealed class PdhCounter
         try
         {
             uint status = _getValue(_handle, Pdh.PDH_FMT_DOUBLE | Pdh.PDH_FMT_NOCAP100, out _, out PDH_FMT_COUNTERVALUE value);
+            LastNativeStatus = status != 0 ? status : value.CStatus;
             LastReadStatus = status != 0 ? PdhReadHealth.ClassifyApi(status, warmingUp) : PdhReadHealth.Classify(value.CStatus, warmingUp);
             if (status != 0 || IsErrorStatus(value.CStatus))
             {
@@ -145,6 +155,7 @@ public sealed class PdhCounter
         {
             HasValue = false;
             LastReadStatus = PdhReadStatus.Failed;
+            LastNativeStatus = Pdh.PDH_INVALID_ARGUMENT;
             return 0.0;
         }
     }
@@ -157,6 +168,13 @@ public sealed class PdhCounter
 /// "\PhysicalDisk(*)\% Disk Time"), returning one value per matched instance.</summary>
 public sealed class PdhMultiCounter : IDisposable
 {
+    /// <summary>Accept valid items despite transient errors on other instances. All-invalid reads
+    /// and API errors still fail. Opt-in so device-specific disk health stays strict.</summary>
+    public bool TolerateInstanceChurn { get; set; }
+    public uint LastNativeStatus { get; private set; }
+    private bool _hasValidItem;
+    private bool _hasFatalItem;
+    private PdhReadStatus _itemStatus;
     private int _readAttempts;
     private bool _warmingUp;
     internal PdhQuery? Query { get; set; }
@@ -168,13 +186,23 @@ public sealed class PdhMultiCounter : IDisposable
     internal PdhReadStatus RecordItemStatus(uint status)
     {
         PdhReadStatus itemStatus = PdhReadHealth.Classify(status, _warmingUp);
-        if (itemStatus > LastReadStatus) LastReadStatus = itemStatus;
+        if (itemStatus == PdhReadStatus.Success) _hasValidItem = true;
+        else
+        {
+            if (!_hasFatalItem) LastNativeStatus = status;
+            if (!PdhReadHealth.IsTransientItem(status)) _hasFatalItem = true;
+        }
+        if (itemStatus > _itemStatus) _itemStatus = itemStatus;
+        LastReadStatus = TolerateInstanceChurn && _hasValidItem && !_hasFatalItem
+            ? PdhReadStatus.Success : _itemStatus;
         return itemStatus;
     }
 
     private PdhCounterEnumerator Empty(uint status)
     {
+        if (status == 0) status = Pdh.PDH_NO_DATA;
         _itemCount = 0;
+        LastNativeStatus = status;
         LastReadStatus = PdhReadHealth.ClassifyApi(status, _warmingUp);
         LastApiReadFailed = LastReadFailed;
         return new PdhCounterEnumerator(IntPtr.Zero, 0);
@@ -183,7 +211,11 @@ public sealed class PdhMultiCounter : IDisposable
     private PdhCounterEnumerator Values(uint itemCount)
     {
         _itemCount = itemCount;
-        LastReadStatus = PdhReadStatus.Success;
+        _hasValidItem = false;
+        _hasFatalItem = false;
+        _itemStatus = PdhReadStatus.Success;
+        LastNativeStatus = itemCount == 0 ? Pdh.PDH_NO_DATA : 0;
+        LastReadStatus = itemCount == 0 && !_warmingUp ? PdhReadStatus.Failed : PdhReadStatus.Success;
         LastApiReadFailed = false;
         return new PdhCounterEnumerator(_buffer, (int)itemCount, this);
     }
@@ -351,6 +383,7 @@ public sealed class PdhMultiCounter : IDisposable
 /// paths work regardless of the OS display language.</summary>
 public sealed class PdhQuery : IDisposable
 {
+    public uint LastCollectionStatus { get; private set; }
     internal int CollectionCount { get; private set; }
     private readonly SafePdhQueryHandle _handle;
     private readonly List<PdhMultiCounter> _multiCounters = new();
@@ -439,15 +472,18 @@ public sealed class PdhQuery : IDisposable
         CollectionCount++;
         if (_disposed || _handle.IsInvalid)
         {
+            LastCollectionStatus = Pdh.PDH_INVALID_ARGUMENT;
             return false;
         }
 
         try
         {
-            return PdhReadHealth.ClassifyApi(Pdh.PdhCollectQueryData(_handle.DangerousGetHandle()), CollectionCount == 1) != PdhReadStatus.Failed;
+            LastCollectionStatus = Pdh.PdhCollectQueryData(_handle.DangerousGetHandle());
+            return PdhReadHealth.ClassifyApi(LastCollectionStatus, CollectionCount == 1) != PdhReadStatus.Failed;
         }
         catch
         {
+            LastCollectionStatus = Pdh.PDH_INVALID_ARGUMENT;
             return false;
         }
     }
