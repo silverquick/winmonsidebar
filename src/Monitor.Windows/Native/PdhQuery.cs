@@ -23,8 +23,6 @@ internal static class PdhReadHealth
         0x800007D1 or Pdh.PDH_CSTATUS_INVALID_DATA or Pdh.PDH_INVALID_DATA or
         Pdh.PDH_CALC_NEGATIVE_DENOMINATOR or 0x800007D7 or 0x800007D8;
 
-    internal static bool IsCalculationError(uint status) => status is
-        Pdh.PDH_CALC_NEGATIVE_DENOMINATOR or 0x800007D7 or 0x800007D8;
 }
 
 /// <summary>One value read from a wildcard-expanded PDH counter, e.g. one CPU core or one disk instance.</summary>
@@ -383,6 +381,7 @@ public sealed class PdhMultiCounter : IDisposable
 /// paths work regardless of the OS display language.</summary>
 public sealed class PdhQuery : IDisposable
 {
+    internal Func<bool>? CollectForTest { get; set; }
     public uint LastCollectionStatus { get; private set; }
     internal int CollectionCount { get; private set; }
     private readonly SafePdhQueryHandle _handle;
@@ -470,6 +469,7 @@ public sealed class PdhQuery : IDisposable
     public bool Collect()
     {
         CollectionCount++;
+        if (CollectForTest is { } collect) return collect();
         if (_disposed || _handle.IsInvalid)
         {
             LastCollectionStatus = Pdh.PDH_INVALID_ARGUMENT;

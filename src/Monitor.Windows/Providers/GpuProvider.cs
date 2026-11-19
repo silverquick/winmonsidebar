@@ -21,6 +21,9 @@ public sealed class GpuProvider : IMetricProvider<GpuSnapshot>
     private PdhMultiCounter? _dedicatedMemoryCounter;
     private IReadOnlyList<DxgiAdapterInfo> _adapters = Array.Empty<DxgiAdapterInfo>();
     private bool _disposed;
+    private GpuSnapshot _lastSuccessfulSnapshot = GpuSnapshot.Empty;
+    private long _failedAdapterLuid;
+    private string? _failedAdapterCounter;
 
     // Sample() で毎秒使い回すバッファ。アダプタ数は起動後変化しないのが通常のため、
     // AdapterAccumulator インスタンス自体も LUID をキーに使い回し、サンプルの先頭で Reset() する。
@@ -51,7 +54,8 @@ public sealed class GpuProvider : IMetricProvider<GpuSnapshot>
 
     public bool LastSampleFailed { get; private set; }
 
-    public string? LastFailureReason => _query is { LastCollectionStatus: not 0 } ? $"PdhCollectQueryData: 0x{_query.LastCollectionStatus:X8}" :
+    public string? LastFailureReason => _failedAdapterCounter is not null ? $"{_failedAdapterCounter}: LUID=0x{_failedAdapterLuid:X16}, no valid adapter items" :
+        _query is { LastCollectionStatus: not 0 } ? $"PdhCollectQueryData: 0x{_query.LastCollectionStatus:X8}" :
         _engineCounter?.LastReadFailed == true ? $"{_engineCounter.Path}: 0x{_engineCounter.LastNativeStatus:X8}" :
         _dedicatedMemoryCounter?.LastReadFailed == true ? $"{_dedicatedMemoryCounter.Path}: 0x{_dedicatedMemoryCounter.LastNativeStatus:X8}" :
         "PDH collect / GPU sample failed";
@@ -122,6 +126,7 @@ public sealed class GpuProvider : IMetricProvider<GpuSnapshot>
         }
 
         LastSampleFailed = false;
+        _failedAdapterCounter = null;
         try
         {
             if (!_query.Collect())
@@ -143,12 +148,17 @@ public sealed class GpuProvider : IMetricProvider<GpuSnapshot>
             _engineCounter.TolerateInstanceChurn = true;
             foreach (PdhItemSpan item in _engineCounter.Enumerate())
             {
-                if (item.ReadStatus != PdhReadStatus.Success || !TryParseEngineInstance(item.InstanceName, out long luid, out ReadOnlySpan<char> engineType))
+                if (!TryParseEngineInstance(item.InstanceName, out long luid, out ReadOnlySpan<char> engineType))
                 {
                     continue;
                 }
 
-                GetOrAddAccumulator(luid).AddEngine(engineType, item.Value);
+                AdapterAccumulator acc = GetOrAddAccumulator(luid);
+                if (item.ReadStatus == PdhReadStatus.Success)
+                {
+                    acc.HasValidEngine = true;
+                    acc.AddEngine(engineType, item.Value);
+                }
             }
 
             LastSampleFailed |= _engineCounter.LastReadFailed;
@@ -157,16 +167,41 @@ public sealed class GpuProvider : IMetricProvider<GpuSnapshot>
                 _dedicatedMemoryCounter.TolerateInstanceChurn = true;
                 foreach (PdhItemSpan item in _dedicatedMemoryCounter.Enumerate())
                 {
-                    if (item.ReadStatus != PdhReadStatus.Success || !TryParseMemoryInstance(item.InstanceName, out long luid))
+                    if (!TryParseMemoryInstance(item.InstanceName, out long luid))
                     {
                         continue;
                     }
 
-                    GetOrAddAccumulator(luid).DedicatedUsedBytes += ClampToBytes(item.Value);
+                    AdapterAccumulator acc = GetOrAddAccumulator(luid);
+                    if (item.ReadStatus == PdhReadStatus.Success)
+                    {
+                        acc.HasValidMemory = true;
+                        acc.HadMemory = true;
+                        acc.DedicatedUsedBytes += ClampToBytes(item.Value);
+                    }
                 }
             }
 
             LastSampleFailed |= _dedicatedMemoryCounter?.LastReadFailed == true;
+
+            if (_query.CollectionCount > 1)
+            {
+                foreach (long luid in _touchedAdapterLuidsBuffer)
+                {
+                    AdapterAccumulator acc = perAdapter[luid];
+                    if (!acc.HasValidEngine || (acc.HadMemory && !acc.HasValidMemory))
+                    {
+                        LastSampleFailed = true;
+                        _failedAdapterLuid = luid;
+                        _failedAdapterCounter = !acc.HasValidEngine ? _engineCounter.Path : _dedicatedMemoryCounter?.Path;
+                        break;
+                    }
+                }
+            }
+
+            // Failed observations are not evidence of removal, nor fresh zero measurements.
+            // Keep accumulators and the last output until a complete sample succeeds.
+            if (LastSampleFailed) return _lastSuccessfulSnapshot;
 
             // このサンプルで見えなかった（脱着等で消えた）アダプタの残骸を除去する。
             // こうしないと、次回以降そのアダプタが再度見えるまでゼロ値のまま出力に残り続けてしまう。
@@ -243,11 +278,12 @@ public sealed class GpuProvider : IMetricProvider<GpuSnapshot>
 
             MergeVendorSensors(adapters);
 
-            return new GpuSnapshot
+            _lastSuccessfulSnapshot = new GpuSnapshot
             {
                 Adapters = adapters,
                 TotalUsagePercent = Math.Clamp(totalUsage, 0.0, 100.0),
             };
+            return _lastSuccessfulSnapshot;
         }
         catch
         {
@@ -556,6 +592,9 @@ public sealed class GpuProvider : IMetricProvider<GpuSnapshot>
     /// </summary>
     internal sealed class AdapterAccumulator
     {
+        public bool HasValidEngine;
+        public bool HasValidMemory;
+        public bool HadMemory;
         public double Engine3D;
         public double EngineCopy;
         public double VideoDecode;
@@ -618,6 +657,8 @@ public sealed class GpuProvider : IMetricProvider<GpuSnapshot>
         /// 辞書と文字列キーを再利用するため、エントリは残したまま値だけをゼロへ戻す。</summary>
         public void Reset()
         {
+            HasValidEngine = false;
+            HasValidMemory = false;
             Engine3D = 0.0;
             EngineCopy = 0.0;
             VideoDecode = 0.0;

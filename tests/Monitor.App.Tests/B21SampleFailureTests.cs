@@ -118,7 +118,8 @@ public sealed class B21SampleFailureTests
 
     [TestMethod]
     [DataRow(Pdh.PDH_CALC_NEGATIVE_DENOMINATOR, false)]
-    [DataRow(0x800007D7u, false)]
+    [DataRow(0x800007D7u, true)]
+    [DataRow(0x800007D8u, true)]
     [DataRow(Pdh.PDH_NO_DATA, true)]
     [DataRow(0xC0000BB9u, true)]
     public void CpuClockCalculationFailureHasBaseClockAlternateButMissingCounterFails(uint status, bool failed)

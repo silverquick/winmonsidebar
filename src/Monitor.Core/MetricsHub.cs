@@ -528,7 +528,8 @@ public sealed class MetricsHub : IAsyncDisposable
         MetricsHubOptions? options = null,
         IMetricProvider<CpuSnapshot>? cpu = null,
         IMetricProvider<DiskSnapshot>? disk = null,
-        IMetricProvider<MemorySnapshot>? memory = null) =>
+        IMetricProvider<MemorySnapshot>? memory = null,
+        IMetricProvider<IReadOnlyList<VolumeSnapshot>>? volumes = null) =>
         new(
             options ?? new MetricsHubOptions(),
             cpu ?? new NullMetricProvider<CpuSnapshot>(CpuSnapshot.Empty),
@@ -538,7 +539,7 @@ public sealed class MetricsHub : IAsyncDisposable
             new NullMetricProvider<GpuSnapshot>(GpuSnapshot.Empty),
             new NullMetricProvider<ProcessSnapshot>(ProcessSnapshot.Empty),
             new NullThermalProvider(),
-            new NullMetricProvider<IReadOnlyList<VolumeSnapshot>>(Array.Empty<VolumeSnapshot>()));
+            volumes ?? new NullMetricProvider<IReadOnlyList<VolumeSnapshot>>(Array.Empty<VolumeSnapshot>()));
 
     /// <summary>テスト用にスナップショットを直接発行・履歴追加する。</summary>
     internal void PublishSnapshotForTest(MetricsSnapshot snapshot, bool appendHistory = true)

@@ -112,6 +112,8 @@ public sealed partial class CpuProvider : IMetricProvider<CpuSnapshot>, IDetailS
             }
             double currentClockMhz = SampleCurrentClockMhz();
 
+            if (LastSampleFailed) return CpuSnapshot.Empty;
+
             return new CpuSnapshot
             {
                 ModelName = _modelName,
@@ -188,7 +190,6 @@ public sealed partial class CpuProvider : IMetricProvider<CpuSnapshot>, IDetailS
             if (!_pdhQuery.Collect()) LastSampleFailed = true;
 
             _coreBuffer.Clear();
-            _perCoreCounter.TolerateInstanceChurn = true;
             foreach (PdhItemSpan item in _perCoreCounter.Enumerate())
             {
                 if (TryParseCoreInstance(item.InstanceName, out long sortKey))
@@ -231,7 +232,6 @@ public sealed partial class CpuProvider : IMetricProvider<CpuSnapshot>, IDetailS
             // 直近の Collect() は SamplePerCoreUsagePercent 内で既に行われているため、ここでは
             // 同じサンプル時点の値をそのまま読む（GetValues 自体は Collect を必要としない）。
             _coreBuffer.Clear();
-            _perCoreClockCounter.TolerateInstanceChurn = true;
             foreach (PdhItemSpan item in _perCoreClockCounter.Enumerate())
             {
                 if (TryParseCoreInstance(item.InstanceName, out long sortKey))
@@ -244,7 +244,7 @@ public sealed partial class CpuProvider : IMetricProvider<CpuSnapshot>, IDetailS
             // changes). Omit this detail read; overall clock still has the known base-clock
             // alternate in SampleCurrentClockMhz. Other API errors remain failures.
             bool useBaseClock = _perCoreClockCounter.LastApiReadFailed &&
-                PdhReadHealth.IsCalculationError(_perCoreClockCounter.LastNativeStatus);
+                _perCoreClockCounter.LastNativeStatus == Pdh.PDH_CALC_NEGATIVE_DENOMINATOR;
             LastSampleFailed |= PdhReadHealth.RequiredFailed(true, _perCoreClockCounter.LastReadStatus, useBaseClock);
             if (_coreBuffer.Count == 0)
             {
